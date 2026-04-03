@@ -43,8 +43,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Required for git scan mode
 
       - uses: dortort/betterleaks-action@v0.1.0
         id: betterleaks
@@ -133,6 +131,10 @@ The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work w
     # Enable live secret validation
     validation: 'true'
 
+    # Options passed to git log (git scan mode only)
+    # Auto-computed on push events to scan only pushed commits
+    log-opts: ''
+
     # Additional CLI arguments
     extra-args: ''
 
@@ -163,6 +165,7 @@ The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work w
 | `no-color` | Disable colored output | `true` |
 | `no-banner` | Suppress ASCII banner | `true` |
 | `validation` | Enable secret validation | `true` |
+| `log-opts` | Options passed to `git log` (git mode only; auto-computed on push) | |
 | `extra-args` | Additional CLI arguments | |
 | `fail-on-leak` | Fail if leaks found | `true` |
 | `github-token` | GitHub token for API calls | `${{ github.token }}` |
@@ -188,9 +191,35 @@ The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work w
 | `stdin` | Reads from standard input |
 
 **Auto mode mapping:**
-- `push` -> `git` scan
+- `push` -> `git` scan (only pushed commits, not full history)
 - `pull_request` / `pull_request_target` -> `dir` scan
 - `schedule` / `workflow_dispatch` -> `dir` scan
+
+### Incremental Git Scanning
+
+On push events, the action automatically computes the commit range from the push payload (`before..after` SHAs) so only newly pushed commits are scanned — not the entire git history. This makes scans fast and avoids redundant work when the action runs on every push.
+
+The action falls back to a full history scan when:
+- A **new branch** is pushed (no previous SHA)
+- A **force push** is detected (previous SHA may not exist)
+- The push event payload cannot be read
+
+To override this behavior, set `log-opts` explicitly:
+```yaml
+# Scan full history
+- uses: dortort/betterleaks-action@v0.1.0
+  with:
+    scan-mode: git
+    log-opts: ''
+
+# Scan specific range
+- uses: dortort/betterleaks-action@v0.1.0
+  with:
+    scan-mode: git
+    log-opts: 'HEAD~5..HEAD'
+```
+
+> **Note:** `fetch-depth: 0` is no longer required for typical push-triggered scans. The default checkout depth is usually sufficient for the pushed commit range.
 
 ## Configuration
 

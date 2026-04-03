@@ -14,6 +14,7 @@ function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
     noColor: true,
     noBanner: true,
     validation: true,
+    logOpts: '',
     extraArgs: '',
     timeout: 300,
     ...overrides
@@ -109,6 +110,22 @@ describe('runner', () => {
       expect(args).toContain('4')
       expect(args).toContain('--max-decode-depth')
       expect(args).toContain('3')
+    })
+
+    it('includes --log-opts in git mode when set', () => {
+      const args = buildArgs('git', makeInputs({logOpts: 'abc123..def456'}))
+      expect(args).toContain('--log-opts')
+      expect(args).toContain('abc123..def456')
+    })
+
+    it('does not include --log-opts in dir mode even when set', () => {
+      const args = buildArgs('dir', makeInputs({logOpts: 'abc123..def456'}))
+      expect(args).not.toContain('--log-opts')
+    })
+
+    it('does not include --log-opts when empty', () => {
+      const args = buildArgs('git', makeInputs({logOpts: ''}))
+      expect(args).not.toContain('--log-opts')
     })
 
     it('uses custom scan-path as positional arg', () => {

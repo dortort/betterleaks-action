@@ -205,7 +205,51 @@ const runner_1 = __nccwpck_require__(1924);
 const sarif_1 = __nccwpck_require__(5985);
 const summary_1 = __nccwpck_require__(3228);
 const constants_1 = __nccwpck_require__(8729);
-function getInputs() {
+const ZERO_SHA = '0000000000000000000000000000000000000000';
+function computeLogOpts(explicitLogOpts, scanMode) {
+    // User-provided log-opts always wins
+    if (explicitLogOpts) {
+        return explicitLogOpts;
+    }
+    // Only auto-compute for git scan mode on push events
+    if (scanMode !== 'git' || process.env.GITHUB_EVENT_NAME !== 'push') {
+        return '';
+    }
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (!eventPath) {
+        return '';
+    }
+    try {
+        const fs = __nccwpck_require__(9896);
+        const event = JSON.parse(fs.readFileSync(eventPath, 'utf-8'));
+        const before = event.before || '';
+        const after = event.after || '';
+        const forced = event.forced || false;
+        // New branch: before is all zeros — fall back to full history
+        if (!before || before === ZERO_SHA) {
+            core.info('New branch detected — scanning full git history');
+            return '';
+        }
+        // Deleted branch: after is all zeros — skip
+        if (!after || after === ZERO_SHA) {
+            core.info('Branch deletion detected — scanning full git history');
+            return '';
+        }
+        // Force push: before SHA may not exist — fall back to full history
+        if (forced) {
+            core.info('Force push detected — scanning full git history');
+            return '';
+        }
+        core.info(`Scanning commit range: ${before}..${after}`);
+        return `${before}..${after}`;
+    }
+    catch {
+        core.warning('Failed to read push event payload — scanning full git history');
+        return '';
+    }
+}
+function getInputs(scanMode) {
+    const explicitLogOpts = core.getInput('log-opts');
     return {
         scanMode: core.getInput('scan-mode'),
         scanPath: core.getInput('scan-path'),
@@ -219,13 +263,13 @@ function getInputs() {
         noColor: core.getBooleanInput('no-color'),
         noBanner: core.getBooleanInput('no-banner'),
         validation: core.getBooleanInput('validation'),
+        logOpts: computeLogOpts(explicitLogOpts, scanMode),
         extraArgs: core.getInput('extra-args'),
         timeout: parseInt(core.getInput('timeout'), 10) || 300
     };
 }
 async function main() {
     try {
-        const inputs = getInputs();
         const version = core.getInput('version');
         const token = core.getInput('github-token');
         const failOnLeak = core.getBooleanInput('fail-on-leak');
@@ -233,8 +277,10 @@ async function main() {
         const binaryPath = await (0, installer_1.install)(version, token);
         // Determine scan mode
         const eventName = process.env.GITHUB_EVENT_NAME || '';
-        const scanMode = (0, runner_1.determineScanMode)(inputs.scanMode, eventName);
+        const scanMode = (0, runner_1.determineScanMode)(core.getInput('scan-mode'), eventName);
         core.info(`Scan mode: ${scanMode} (event: ${eventName})`);
+        // Get inputs (needs scanMode for log-opts auto-computation)
+        const inputs = getInputs(scanMode);
         // Build args and run
         const args = (0, runner_1.buildArgs)(scanMode, inputs);
         const result = await (0, runner_1.run)(binaryPath, args, inputs.timeout);
@@ -335,6 +381,9 @@ function buildArgs(scanMode, inputs) {
     }
     else if (scanMode === 'dir') {
         args.push('.');
+    }
+    if (inputs.logOpts && scanMode === 'git') {
+        args.push('--log-opts', inputs.logOpts);
     }
     if (inputs.config) {
         args.push('--config', inputs.config);
