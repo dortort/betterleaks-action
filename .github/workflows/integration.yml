@@ -1,0 +1,64 @@
+name: Integration Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  integration-dir-scan:
+    name: Integration - Dir Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Betterleaks Action (dir scan)
+        id: scan
+        uses: ./
+        with:
+          scan-mode: dir
+          scan-path: test-fixtures
+          report-format: sarif
+          report-path: test-results.sarif
+          fail-on-leak: 'false'
+
+      - name: Verify outputs
+        run: |
+          echo "Exit code: ${{ steps.scan.outputs.exit-code }}"
+          echo "Leaks found: ${{ steps.scan.outputs.leaks-found }}"
+          echo "Report path: ${{ steps.scan.outputs.report-path }}"
+          echo "SARIF path: ${{ steps.scan.outputs.sarif-path }}"
+
+          if [ ! -f "test-results.sarif" ]; then
+            echo "::warning::SARIF report file not found"
+          fi
+
+  integration-sarif-output:
+    name: Integration - SARIF Output
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Betterleaks Action
+        id: scan
+        uses: ./
+        with:
+          scan-mode: dir
+          scan-path: test-fixtures
+          report-format: sarif
+          fail-on-leak: 'false'
+
+      - name: Verify SARIF path output is set
+        run: |
+          if [ -z "${{ steps.scan.outputs.sarif-path }}" ]; then
+            echo "::error::sarif-path output not set"
+            exit 1
+          fi
+          echo "SARIF path output: ${{ steps.scan.outputs.sarif-path }}"
