@@ -19,7 +19,7 @@ Betterleaks is a modern, open-source secrets detection tool built as the success
 ## Quick Start
 
 ```yaml
-- uses: dortort/betterleaks-action@main
+- uses: dortort/betterleaks-action@v0.1.0
   with:
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -46,7 +46,7 @@ jobs:
         with:
           fetch-depth: 0  # Required for git scan mode
 
-      - uses: dortort/betterleaks-action@main
+      - uses: dortort/betterleaks-action@v0.1.0
         id: betterleaks
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -74,7 +74,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dortort/betterleaks-action@main
+      - uses: dortort/betterleaks-action@v0.1.0
         id: betterleaks
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -91,7 +91,7 @@ The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work w
 ## Full Usage
 
 ```yaml
-- uses: dortort/betterleaks-action@main
+- uses: dortort/betterleaks-action@v0.1.0
   with:
     # Betterleaks version (e.g., v1.1.1 or latest)
     version: 'latest'
