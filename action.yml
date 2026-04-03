@@ -1,0 +1,92 @@
+name: 'Betterleaks Action'
+description: 'Scan for secrets and credentials using Betterleaks'
+author: 'dortort'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  version:
+    description: 'Betterleaks version (e.g., v1.1.1 or latest)'
+    required: false
+    default: 'latest'
+  scan-mode:
+    description: 'Scan mode: git, dir, stdin, or auto (auto detects from event type)'
+    required: false
+    default: 'auto'
+  scan-path:
+    description: 'Path to scan (positional argument to betterleaks CLI)'
+    required: false
+    default: '.'
+  config:
+    description: 'Path to Betterleaks config file'
+    required: false
+    default: ''
+  baseline-path:
+    description: 'Path to baseline file for incremental adoption'
+    required: false
+    default: ''
+  report-format:
+    description: 'Report format (single value): json, csv, junit, sarif, or template'
+    required: false
+    default: 'sarif'
+  report-path:
+    description: 'Path to write the report file'
+    required: false
+    default: 'betterleaks-report.sarif'
+  redact:
+    description: 'Redact secrets from output'
+    required: false
+    default: 'true'
+  exit-code:
+    description: 'Custom exit code when leaks are found'
+    required: false
+    default: ''
+  verbose:
+    description: 'Enable verbose output'
+    required: false
+    default: 'false'
+  no-color:
+    description: 'Disable colored output'
+    required: false
+    default: 'true'
+  no-banner:
+    description: 'Suppress ASCII banner'
+    required: false
+    default: 'true'
+  validation:
+    description: 'Enable live secret validation (CLI defaults to true)'
+    required: false
+    default: 'true'
+  extra-args:
+    description: 'Additional CLI arguments passed directly to betterleaks'
+    required: false
+    default: ''
+  fail-on-leak:
+    description: 'Fail the action if leaks are found'
+    required: false
+    default: 'true'
+  github-token:
+    description: 'GitHub token for authenticated API calls (version resolution)'
+    required: false
+    default: ${{ github.token }}
+  timeout:
+    description: 'Scan timeout in seconds'
+    required: false
+    default: '300'
+
+outputs:
+  exit-code:
+    description: 'Betterleaks process exit code'
+  report-path:
+    description: 'Path to the generated report file'
+  sarif-path:
+    description: 'Path to SARIF file (for use with github/codeql-action/upload-sarif)'
+  leaks-found:
+    description: 'Whether leaks were found (true/false)'
+  leak-count:
+    description: 'Number of leaks found (only available when report-format is sarif)'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

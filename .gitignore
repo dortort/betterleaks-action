@@ -1,0 +1,7 @@
+node_modules/
+lib/
+*.js.map
+.env
+*.tgz
+coverage/
+.omc/
