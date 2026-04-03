@@ -58,6 +58,36 @@ jobs:
           sarif_file: ${{ steps.betterleaks.outputs.sarif-path }}
 ```
 
+## Without GitHub Advanced Security
+
+If your repo doesn't have GitHub Advanced Security (required for Code Scanning / SARIF upload), you can still use the action. The scan runs locally and all outputs work — just save the report as a workflow artifact instead:
+
+```yaml
+name: Secrets Scan
+on: [push, pull_request]
+
+jobs:
+  betterleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dortort/betterleaks-action@main
+        id: betterleaks
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: betterleaks-report
+          path: ${{ steps.betterleaks.outputs.report-path }}
+```
+
+The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work without any security plan.
+
 ## Full Usage
 
 ```yaml
