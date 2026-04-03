@@ -216,4 +216,4 @@ MIT
 
 ## Credits
 
-This action wraps [Betterleaks](https://github.com/betterleaks/betterleaks), a modern open-source secrets detection tool.
+This action wraps [Betterleaks](https://github.com/betterleaks/betterleaks), a tool for detecting secrets like passwords, API keys, and tokens in git repos and files. Betterleaks development is supported by [Aikido Security](https://www.aikido.dev).
