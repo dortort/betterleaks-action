@@ -216,4 +216,4 @@ MIT
 
 ## Credits
 
-This action wraps [Betterleaks](https://github.com/betterleaks/betterleaks), a modern open-source secrets detection tool. Betterleaks is maintained by [Zach Rice](https://github.com/zricethezav) and sponsored by [Aikido Security](https://www.aikido.dev/).
+This action wraps [Betterleaks](https://github.com/betterleaks/betterleaks), a modern open-source secrets detection tool.
