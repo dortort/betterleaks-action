@@ -13,6 +13,7 @@ export interface ActionInputs {
   noColor: boolean
   noBanner: boolean
   validation: boolean
+  logOpts: string
   extraArgs: string
   timeout: number
 }
@@ -50,6 +51,9 @@ export function buildArgs(scanMode: string, inputs: ActionInputs): string[] {
     args.push('.')
   }
 
+  if (inputs.logOpts && scanMode === 'git') {
+    args.push('--log-opts', inputs.logOpts)
+  }
   if (inputs.config) {
     args.push('--config', inputs.config)
   }
