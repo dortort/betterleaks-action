@@ -48,8 +48,9 @@ async function main(): Promise<void> {
     core.setOutput('report-path', inputs.reportPath)
     core.setOutput('leaks-found', result.exitCode === EXIT_CODE_LEAKS_FOUND)
 
-    // Parse SARIF if applicable
-    let leakCount = 0
+    // Parse SARIF if applicable. Stays undefined for other report formats:
+    // an unknown count must not be reported as zero findings.
+    let leakCount: number | undefined
     if (inputs.reportFormat === 'sarif') {
       core.setOutput('sarif-path', inputs.reportPath)
       const sarifResults = await parseSarifResults(inputs.reportPath)
