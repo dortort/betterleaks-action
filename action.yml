@@ -58,6 +58,10 @@ inputs:
     description: 'Enable live secret validation (CLI defaults to true)'
     required: false
     default: 'true'
+  log-opts:
+    description: 'Options passed to git log via --log-opts (git scan mode only). On push events, auto-computed to scan only pushed commits unless explicitly set.'
+    required: false
+    default: ''
   extra-args:
     description: 'Additional CLI arguments passed directly to betterleaks'
     required: false
