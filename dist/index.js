@@ -242,8 +242,9 @@ async function main() {
         core.setOutput('exit-code', result.exitCode);
         core.setOutput('report-path', inputs.reportPath);
         core.setOutput('leaks-found', result.exitCode === constants_1.EXIT_CODE_LEAKS_FOUND);
-        // Parse SARIF if applicable
-        let leakCount = 0;
+        // Parse SARIF if applicable. Stays undefined for other report formats:
+        // an unknown count must not be reported as zero findings.
+        let leakCount;
         if (inputs.reportFormat === 'sarif') {
             core.setOutput('sarif-path', inputs.reportPath);
             const sarifResults = await (0, sarif_1.parseSarifResults)(inputs.reportPath);
@@ -497,10 +498,18 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.writeSummary = writeSummary;
 const core = __importStar(__nccwpck_require__(7484));
+const constants_1 = __nccwpck_require__(8729);
 async function writeSummary(leakCount, scanMode, reportPath, exitCode) {
-    const passed = leakCount === 0;
+    // The exit code is the authoritative signal. leakCount is only available for
+    // SARIF reports, and is absent whenever the scan failed before writing one,
+    // so treating a missing count as zero reported those scans as clean.
+    const passed = exitCode === constants_1.EXIT_CODE_CLEAN;
     const statusEmoji = passed ? '\u2705' : '\u274c';
-    const statusText = passed ? 'No leaks detected' : `${leakCount} leak(s) found`;
+    const statusText = passed
+        ? 'No leaks detected'
+        : leakCount === undefined
+            ? 'Leaks detected'
+            : `${leakCount} leak(s) found`;
     await core.summary
         .addHeading(`${statusEmoji} Betterleaks Scan Results`)
         .addTable([
@@ -510,7 +519,12 @@ async function writeSummary(leakCount, scanMode, reportPath, exitCode) {
             { data: 'Leaks Found', header: true },
             { data: 'Exit Code', header: true }
         ],
-        [statusText, scanMode, String(leakCount), String(exitCode)]
+        [
+            statusText,
+            scanMode,
+            leakCount === undefined ? 'unknown' : String(leakCount),
+            String(exitCode)
+        ]
     ])
         .addRaw(`\n\nReport written to \`${reportPath}\`\n\n` +
         'Powered by [Betterleaks](https://github.com/betterleaks/betterleaks)')

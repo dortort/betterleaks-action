@@ -52,4 +52,30 @@ describe('summary', () => {
       expect.stringContaining('custom-report.sarif')
     )
   })
+
+  // Regression: a non-SARIF report format leaves leakCount undefined. Reading
+  // that as zero rendered a leaky scan as "No leaks detected".
+  it('does not report clean when leaks were found but the count is unknown', async () => {
+    await writeSummary(undefined, 'dir', 'report.json', 1)
+    expect(mockSummary.addHeading).toHaveBeenCalledWith(
+      expect.stringContaining('❌')
+    )
+    expect(mockSummary.addTable).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.arrayContaining(['Leaks detected', 'dir', 'unknown', '1'])
+      ])
+    )
+  })
+
+  // Regression: a scan that dies before writing a report yields leakCount 0
+  // via the !existsSync branch in parseSarifResults, which rendered clean.
+  it('does not report clean when the scan exited unexpectedly', async () => {
+    await writeSummary(0, 'dir', 'report.sarif', 126)
+    expect(mockSummary.addHeading).toHaveBeenCalledWith(
+      expect.stringContaining('❌')
+    )
+    expect(mockSummary.addHeading).not.toHaveBeenCalledWith(
+      expect.stringContaining('✅')
+    )
+  })
 })
