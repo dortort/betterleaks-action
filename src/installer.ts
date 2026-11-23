@@ -9,7 +9,7 @@ import {
   PLATFORM_MAP,
   getArchiveExtension,
   getBinaryName
-} from './constants'
+} from './constants.js'
 
 interface GitHubRelease {
   tag_name: string

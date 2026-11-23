@@ -1,5 +1,5 @@
 import * as exec from '@actions/exec'
-import {EXIT_CODE_LEAKS_FOUND} from './constants'
+import {EXIT_CODE_LEAKS_FOUND} from './constants.js'
 
 export function parseLeakExitCode(exitCodeInput: string): number {
   const trimmed = exitCodeInput.trim()

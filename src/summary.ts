@@ -1,5 +1,5 @@
 import * as core from '@actions/core'
-import {EXIT_CODE_CLEAN, EXIT_CODE_LEAKS_FOUND} from './constants'
+import {EXIT_CODE_CLEAN, EXIT_CODE_LEAKS_FOUND} from './constants.js'
 
 export async function writeSummary(
   leakCount: number | undefined,
