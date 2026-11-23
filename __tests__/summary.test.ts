@@ -1,18 +1,19 @@
-import {writeSummary} from '../src/summary'
+import {describe, it, expect, beforeEach, vi, type Mock} from 'vitest'
+import {writeSummary} from '../src/summary.js'
 import * as core from '@actions/core'
 
-jest.mock('@actions/core')
+vi.mock('@actions/core')
 
 describe('summary', () => {
-  let mockWrite: jest.Mock
-  let mockSummary: Record<string, jest.Mock>
+  let mockWrite: Mock
+  let mockSummary: Record<string, Mock>
 
   beforeEach(() => {
-    mockWrite = jest.fn().mockResolvedValue(undefined)
+    mockWrite = vi.fn().mockResolvedValue(undefined)
     mockSummary = {
-      addHeading: jest.fn().mockReturnThis(),
-      addTable: jest.fn().mockReturnThis(),
-      addRaw: jest.fn().mockReturnThis(),
+      addHeading: vi.fn().mockReturnThis(),
+      addTable: vi.fn().mockReturnThis(),
+      addRaw: vi.fn().mockReturnThis(),
       write: mockWrite
     }
     Object.defineProperty(core, 'summary', {
@@ -141,7 +142,7 @@ describe('summary', () => {
       ])
     )
 
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     await writeSummary(undefined, 'dir', 'report.json', 1, 2)
     expect(mockSummary.addTable).toHaveBeenCalledWith(
       expect.arrayContaining([

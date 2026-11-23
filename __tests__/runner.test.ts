@@ -1,9 +1,10 @@
+import {describe, it, expect} from 'vitest'
 import {
   determineScanMode,
   buildArgs,
   parseLeakExitCode,
   ActionInputs
-} from '../src/runner'
+} from '../src/runner.js'
 
 function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
   return {

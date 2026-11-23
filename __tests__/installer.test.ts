@@ -1,14 +1,15 @@
-import {resolveVersion, getDownloadUrl} from '../src/installer'
+import {describe, it, expect, beforeEach, vi, type MockedClass} from 'vitest'
+import {resolveVersion, getDownloadUrl} from '../src/installer.js'
 import {HttpClient} from '@actions/http-client'
 
-jest.mock('@actions/http-client')
-jest.mock('@actions/core')
+vi.mock('@actions/http-client')
+vi.mock('@actions/core')
 
-const MockHttpClient = HttpClient as jest.MockedClass<typeof HttpClient>
+const MockHttpClient = HttpClient as MockedClass<typeof HttpClient>
 
 describe('installer', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   describe('resolveVersion', () => {
@@ -23,7 +24,7 @@ describe('installer', () => {
     })
 
     it('resolves latest via GitHub API', async () => {
-      const mockGetJson = jest.fn().mockResolvedValue({
+      const mockGetJson = vi.fn().mockResolvedValue({
         statusCode: 200,
         result: {tag_name: 'v1.1.1'}
       })
@@ -38,7 +39,7 @@ describe('installer', () => {
     })
 
     it('throws on rate limit', async () => {
-      const mockGetJson = jest.fn().mockResolvedValue({
+      const mockGetJson = vi.fn().mockResolvedValue({
         statusCode: 403,
         result: null
       })
@@ -48,7 +49,7 @@ describe('installer', () => {
     })
 
     it('throws on non-200 response', async () => {
-      const mockGetJson = jest.fn().mockResolvedValue({
+      const mockGetJson = vi.fn().mockResolvedValue({
         statusCode: 404,
         result: null
       })
