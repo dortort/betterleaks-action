@@ -87,6 +87,13 @@ describe('installer', () => {
       )
     })
 
+    it('constructs correct URL for v2 prerelease tags', () => {
+      const url = getDownloadUrl('v2.0.0-rc.9', 'linux', 'x64')
+      expect(url).toBe(
+        'https://github.com/betterleaks/betterleaks/releases/download/v2.0.0-rc.9/betterleaks_2.0.0-rc.9_linux_x64.tar.gz'
+      )
+    })
+
     it('throws for unsupported platform', () => {
       expect(() => getDownloadUrl('v1.1.1', 'freebsd', 'x64')).toThrow(
         'Unsupported platform/arch'
