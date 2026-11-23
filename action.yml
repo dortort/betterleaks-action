@@ -88,5 +88,5 @@ outputs:
     description: 'Number of leaks found (only available when report-format is sarif)'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
