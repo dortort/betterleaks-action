@@ -1,9 +1,15 @@
 import * as core from '@actions/core'
 import {install} from './installer'
-import {determineScanMode, buildArgs, run, ActionInputs} from './runner'
+import {
+  determineScanMode,
+  buildArgs,
+  parseLeakExitCode,
+  run,
+  ActionInputs
+} from './runner'
 import {parseSarifResults} from './sarif'
 import {writeSummary} from './summary'
-import {EXIT_CODE_LEAKS_FOUND} from './constants'
+import {EXIT_CODE_CLEAN} from './constants'
 
 function getInputs(): ActionInputs {
   return {
@@ -27,6 +33,7 @@ function getInputs(): ActionInputs {
 async function main(): Promise<void> {
   try {
     const inputs = getInputs()
+    const leakExitCode = parseLeakExitCode(inputs.exitCode)
     const version = core.getInput('version')
     const token = core.getInput('github-token')
     const failOnLeak = core.getBooleanInput('fail-on-leak')
@@ -39,35 +46,47 @@ async function main(): Promise<void> {
     const scanMode = determineScanMode(inputs.scanMode, eventName)
     core.info(`Scan mode: ${scanMode} (event: ${eventName})`)
 
-    // Build args and run
     const args = buildArgs(scanMode, inputs)
     const result = await run(binaryPath, args, inputs.timeout)
 
-    // Set basic outputs
+    const isUnexpectedError =
+      result.exitCode !== EXIT_CODE_CLEAN && result.exitCode !== leakExitCode
+
     core.setOutput('exit-code', result.exitCode)
     core.setOutput('report-path', inputs.reportPath)
-    core.setOutput('leaks-found', result.exitCode === EXIT_CODE_LEAKS_FOUND)
 
-    // Parse SARIF if applicable
-    let leakCount = 0
+    let leakCount: number | undefined
     if (inputs.reportFormat === 'sarif') {
       core.setOutput('sarif-path', inputs.reportPath)
-      const sarifResults = await parseSarifResults(inputs.reportPath)
-      leakCount = sarifResults.leakCount
-      core.setOutput('leak-count', leakCount)
+      if (!isUnexpectedError) {
+        const sarifResults = await parseSarifResults(inputs.reportPath)
+        leakCount = sarifResults.leakCount
+        core.setOutput('leak-count', leakCount)
+      }
     }
 
-    // Write job summary
-    await writeSummary(leakCount, scanMode, inputs.reportPath, result.exitCode)
+    const leaksFound =
+      !isUnexpectedError &&
+      ((leakCount !== undefined && leakCount > 0) ||
+        (leakExitCode !== EXIT_CODE_CLEAN && result.exitCode === leakExitCode))
 
-    // Fail if leaks found and fail-on-leak is true
-    if (result.exitCode === EXIT_CODE_LEAKS_FOUND && failOnLeak) {
-      core.setFailed(
-        `Betterleaks detected ${leakCount || 'one or more'} secret(s). See report at ${inputs.reportPath}`
-      )
-    } else if (result.exitCode !== 0 && result.exitCode !== EXIT_CODE_LEAKS_FOUND) {
+    core.setOutput('leaks-found', leaksFound)
+
+    await writeSummary(
+      leakCount,
+      scanMode,
+      inputs.reportPath,
+      result.exitCode,
+      leakExitCode
+    )
+
+    if (isUnexpectedError) {
       core.setFailed(
         `Betterleaks exited with unexpected code ${result.exitCode}: ${result.stderr}`
+      )
+    } else if (leaksFound && failOnLeak) {
+      core.setFailed(
+        `Betterleaks detected ${leakCount || 'one or more'} secret(s). See report at ${inputs.reportPath}`
       )
     }
   } catch (error) {

@@ -226,6 +226,7 @@ function getInputs() {
 async function main() {
     try {
         const inputs = getInputs();
+        const leakExitCode = (0, runner_1.parseLeakExitCode)(inputs.exitCode);
         const version = core.getInput('version');
         const token = core.getInput('github-token');
         const failOnLeak = core.getBooleanInput('fail-on-leak');
@@ -235,29 +236,30 @@ async function main() {
         const eventName = process.env.GITHUB_EVENT_NAME || '';
         const scanMode = (0, runner_1.determineScanMode)(inputs.scanMode, eventName);
         core.info(`Scan mode: ${scanMode} (event: ${eventName})`);
-        // Build args and run
         const args = (0, runner_1.buildArgs)(scanMode, inputs);
         const result = await (0, runner_1.run)(binaryPath, args, inputs.timeout);
-        // Set basic outputs
+        const isUnexpectedError = result.exitCode !== constants_1.EXIT_CODE_CLEAN && result.exitCode !== leakExitCode;
         core.setOutput('exit-code', result.exitCode);
         core.setOutput('report-path', inputs.reportPath);
-        core.setOutput('leaks-found', result.exitCode === constants_1.EXIT_CODE_LEAKS_FOUND);
-        // Parse SARIF if applicable
-        let leakCount = 0;
+        let leakCount;
         if (inputs.reportFormat === 'sarif') {
             core.setOutput('sarif-path', inputs.reportPath);
-            const sarifResults = await (0, sarif_1.parseSarifResults)(inputs.reportPath);
-            leakCount = sarifResults.leakCount;
-            core.setOutput('leak-count', leakCount);
+            if (!isUnexpectedError) {
+                const sarifResults = await (0, sarif_1.parseSarifResults)(inputs.reportPath);
+                leakCount = sarifResults.leakCount;
+                core.setOutput('leak-count', leakCount);
+            }
         }
-        // Write job summary
-        await (0, summary_1.writeSummary)(leakCount, scanMode, inputs.reportPath, result.exitCode);
-        // Fail if leaks found and fail-on-leak is true
-        if (result.exitCode === constants_1.EXIT_CODE_LEAKS_FOUND && failOnLeak) {
-            core.setFailed(`Betterleaks detected ${leakCount || 'one or more'} secret(s). See report at ${inputs.reportPath}`);
-        }
-        else if (result.exitCode !== 0 && result.exitCode !== constants_1.EXIT_CODE_LEAKS_FOUND) {
+        const leaksFound = !isUnexpectedError &&
+            ((leakCount !== undefined && leakCount > 0) ||
+                (leakExitCode !== constants_1.EXIT_CODE_CLEAN && result.exitCode === leakExitCode));
+        core.setOutput('leaks-found', leaksFound);
+        await (0, summary_1.writeSummary)(leakCount, scanMode, inputs.reportPath, result.exitCode, leakExitCode);
+        if (isUnexpectedError) {
             core.setFailed(`Betterleaks exited with unexpected code ${result.exitCode}: ${result.stderr}`);
+        }
+        else if (leaksFound && failOnLeak) {
+            core.setFailed(`Betterleaks detected ${leakCount || 'one or more'} secret(s). See report at ${inputs.reportPath}`);
         }
     }
     catch (error) {
@@ -308,10 +310,23 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseLeakExitCode = parseLeakExitCode;
 exports.determineScanMode = determineScanMode;
 exports.buildArgs = buildArgs;
 exports.run = run;
 const exec = __importStar(__nccwpck_require__(5236));
+const constants_1 = __nccwpck_require__(8729);
+function parseLeakExitCode(exitCodeInput) {
+    const trimmed = exitCodeInput.trim();
+    if (!trimmed) {
+        return constants_1.EXIT_CODE_LEAKS_FOUND;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+        throw new Error(`Invalid exit-code input: ${exitCodeInput}`);
+    }
+    return parsed;
+}
 function determineScanMode(inputMode, eventName) {
     if (inputMode !== 'auto') {
         return inputMode;
@@ -497,10 +512,45 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.writeSummary = writeSummary;
 const core = __importStar(__nccwpck_require__(7484));
-async function writeSummary(leakCount, scanMode, reportPath, exitCode) {
-    const passed = leakCount === 0;
-    const statusEmoji = passed ? '\u2705' : '\u274c';
-    const statusText = passed ? 'No leaks detected' : `${leakCount} leak(s) found`;
+const constants_1 = __nccwpck_require__(8729);
+async function writeSummary(leakCount, scanMode, reportPath, exitCode, leakExitCode = constants_1.EXIT_CODE_LEAKS_FOUND) {
+    const isError = exitCode !== constants_1.EXIT_CODE_CLEAN && exitCode !== leakExitCode;
+    const hasPositiveCount = leakCount !== undefined && leakCount > 0;
+    const isLeakExit = leakExitCode !== constants_1.EXIT_CODE_CLEAN && exitCode === leakExitCode;
+    const leaksDetected = !isError && (hasPositiveCount || isLeakExit);
+    const isIndeterminate = !isError &&
+        !leaksDetected &&
+        leakExitCode === constants_1.EXIT_CODE_CLEAN &&
+        leakCount === undefined;
+    let statusEmoji;
+    let statusText;
+    let leaksFoundCell;
+    if (isError) {
+        statusEmoji = '\u274c';
+        statusText = `Scan failed (exit code ${exitCode})`;
+        leaksFoundCell = 'N/A';
+    }
+    else if (leaksDetected) {
+        statusEmoji = '\u274c';
+        statusText = hasPositiveCount
+            ? `${leakCount} leak(s) found`
+            : 'Leaks detected';
+        leaksFoundCell = hasPositiveCount ? String(leakCount) : 'unknown';
+    }
+    else if (isIndeterminate) {
+        statusEmoji = '\u26a0\ufe0f';
+        statusText = 'Scan completed (leak status unavailable)';
+        leaksFoundCell = 'unknown';
+    }
+    else {
+        statusEmoji = '\u2705';
+        statusText = 'No leaks detected';
+        leaksFoundCell = String(leakCount ?? 0);
+    }
+    const footer = isError
+        ? '\n\nPowered by [Betterleaks](https://github.com/betterleaks/betterleaks)'
+        : `\n\nReport written to \`${reportPath}\`\n\n` +
+            'Powered by [Betterleaks](https://github.com/betterleaks/betterleaks)';
     await core.summary
         .addHeading(`${statusEmoji} Betterleaks Scan Results`)
         .addTable([
@@ -510,10 +560,9 @@ async function writeSummary(leakCount, scanMode, reportPath, exitCode) {
             { data: 'Leaks Found', header: true },
             { data: 'Exit Code', header: true }
         ],
-        [statusText, scanMode, String(leakCount), String(exitCode)]
+        [statusText, scanMode, leaksFoundCell, String(exitCode)]
     ])
-        .addRaw(`\n\nReport written to \`${reportPath}\`\n\n` +
-        'Powered by [Betterleaks](https://github.com/betterleaks/betterleaks)')
+        .addRaw(footer)
         .write();
 }
 //# sourceMappingURL=summary.js.map

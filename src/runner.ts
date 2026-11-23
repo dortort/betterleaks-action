@@ -1,4 +1,17 @@
 import * as exec from '@actions/exec'
+import {EXIT_CODE_LEAKS_FOUND} from './constants'
+
+export function parseLeakExitCode(exitCodeInput: string): number {
+  const trimmed = exitCodeInput.trim()
+  if (!trimmed) {
+    return EXIT_CODE_LEAKS_FOUND
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid exit-code input: ${exitCodeInput}`)
+  }
+  return parsed
+}
 
 export interface ActionInputs {
   scanMode: string

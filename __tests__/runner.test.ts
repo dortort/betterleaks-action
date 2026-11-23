@@ -1,4 +1,9 @@
-import {determineScanMode, buildArgs, ActionInputs} from '../src/runner'
+import {
+  determineScanMode,
+  buildArgs,
+  parseLeakExitCode,
+  ActionInputs
+} from '../src/runner'
 
 function makeInputs(overrides: Partial<ActionInputs> = {}): ActionInputs {
   return {
@@ -115,6 +120,25 @@ describe('runner', () => {
       const args = buildArgs('dir', makeInputs({scanPath: 'src/'}))
       expect(args[0]).toBe('dir')
       expect(args[1]).toBe('src/')
+    })
+  })
+
+  describe('parseLeakExitCode', () => {
+    it('defaults to 1 when empty or whitespace', () => {
+      expect(parseLeakExitCode('')).toBe(1)
+      expect(parseLeakExitCode('   ')).toBe(1)
+    })
+
+    it('parses valid non-negative integers including 0', () => {
+      expect(parseLeakExitCode('0')).toBe(0)
+      expect(parseLeakExitCode('2')).toBe(2)
+      expect(parseLeakExitCode(' 42 ')).toBe(42)
+    })
+
+    it('throws on invalid values', () => {
+      expect(() => parseLeakExitCode('-1')).toThrow('Invalid exit-code input')
+      expect(() => parseLeakExitCode('abc')).toThrow('Invalid exit-code input')
+      expect(() => parseLeakExitCode('1.5')).toThrow('Invalid exit-code input')
     })
   })
 })
