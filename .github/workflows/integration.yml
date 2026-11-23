@@ -62,3 +62,40 @@ jobs:
             exit 1
           fi
           echo "SARIF path output: ${{ steps.scan.outputs.sarif-path }}"
+
+  integration-cross-platform:
+    name: Integration - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run Betterleaks Action (dir scan)
+        id: scan
+        uses: ./
+        with:
+          scan-mode: dir
+          scan-path: test-fixtures
+          report-format: sarif
+          report-path: test-results.sarif
+          fail-on-leak: 'false'
+
+      - name: Verify the scan ran and wrote its report
+        shell: bash
+        env:
+          EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+          SARIF_PATH: ${{ steps.scan.outputs.sarif-path }}
+        run: |
+          echo "Exit code: $EXIT_CODE"
+          echo "SARIF path: $SARIF_PATH"
+          if [ -z "$EXIT_CODE" ] || [ -z "$SARIF_PATH" ]; then
+            echo "::error::exit-code or sarif-path output not set"
+            exit 1
+          fi
+          if [ ! -s "test-results.sarif" ]; then
+            echo "::error::SARIF report file missing or empty"
+            exit 1
+          fi
