@@ -1,4 +1,5 @@
-import {parseSarifResults} from '../src/sarif'
+import {describe, it, expect, beforeEach, afterEach} from 'vitest'
+import {parseSarifResults} from '../src/sarif.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'

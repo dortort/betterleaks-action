@@ -1,8 +1,9 @@
+import {describe, it, expect} from 'vitest'
 import {
   PLATFORM_MAP,
   getArchiveExtension,
   getBinaryName
-} from '../src/constants'
+} from '../src/constants.js'
 
 describe('constants', () => {
   describe('PLATFORM_MAP', () => {
