@@ -7,7 +7,7 @@ branding:
 
 inputs:
   version:
-    description: 'Betterleaks version (e.g., v1.1.1 or latest)'
+    description: 'Betterleaks v1.x version (e.g., v1.10.1 or latest; on v0.x, latest resolves the newest stable v1.x release — pin a specific version for security and reproducibility)'
     required: false
     default: 'latest'
   scan-mode:

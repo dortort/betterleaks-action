@@ -93,7 +93,9 @@ The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work w
 ```yaml
 - uses: dortort/betterleaks-action@v0.2.0
   with:
-    # Betterleaks version (e.g., v1.1.1 or latest)
+    # Betterleaks v1.x version (e.g., v1.10.1 or latest)
+    # On v0.x, 'latest' resolves the newest stable Betterleaks v1.x release.
+    # Pin a specific version for security and reproducibility.
     version: 'latest'
 
     # Scan mode: git, dir, stdin, or auto
@@ -150,7 +152,7 @@ The job summary, `leaks-found`, `leak-count`, and `exit-code` outputs all work w
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `version` | Betterleaks version | `latest` |
+| `version` | Betterleaks `v1.x` version (`latest` resolves the newest stable `v1.x` release on `v0.x`; pinning a specific version is recommended for security and reproducibility) | `latest` |
 | `scan-mode` | Scan mode: `git`, `dir`, `stdin`, `auto` | `auto` |
 | `scan-path` | Path to scan | `.` |
 | `config` | Path to config file | |
