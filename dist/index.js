@@ -35689,30 +35689,111 @@ function getBinaryName(platform) {
 
 
 
+const RELEASES_PER_PAGE = 100;
+const MAX_RELEASE_PAGES = 10;
+const STABLE_V1_TAG_RE = /^v?1\.(\d+)\.(\d+)$/;
+const MAJOR_VERSION_RE = /^v?(\d+)(?:\.|-|$)/i;
+const NEXT_LINK_RE = /<[^>]+>;\s*rel="next"/i;
 function stripVPrefix(version) {
-    return version.startsWith('v') ? version.slice(1) : version;
+    return version.startsWith('v') || version.startsWith('V')
+        ? version.slice(1)
+        : version;
 }
 function ensureVPrefix(version) {
-    return version.startsWith('v') ? version : `v${version}`;
+    return `v${stripVPrefix(version)}`;
+}
+function parseStableV1Tag(tag) {
+    const match = STABLE_V1_TAG_RE.exec(tag);
+    if (!match) {
+        return undefined;
+    }
+    return {
+        tag: ensureVPrefix(tag),
+        minor: Number(match[1]),
+        patch: Number(match[2])
+    };
+}
+function isNewerV1(candidate, current) {
+    if (candidate.minor !== current.minor) {
+        return candidate.minor > current.minor;
+    }
+    return candidate.patch > current.patch;
+}
+function assertSupportedExplicitVersion(version) {
+    const tag = ensureVPrefix(version);
+    const match = MAJOR_VERSION_RE.exec(version);
+    if (match && Number(match[1]) >= 2) {
+        throw new Error(`Betterleaks ${tag} is not supported by dortort/betterleaks-action v0.x (which supports Betterleaks v1.x only). Upgrade to a v2-compatible major release of dortort/betterleaks-action when available, or pin a v1.x version (e.g., v1.10.1) or use 'latest'.`);
+    }
+    return tag;
+}
+function hasNextPage(linkHeader, pageLength) {
+    if (linkHeader !== undefined) {
+        const value = Array.isArray(linkHeader) ? linkHeader.join(',') : linkHeader;
+        return NEXT_LINK_RE.test(value);
+    }
+    return pageLength === RELEASES_PER_PAGE;
+}
+function isRateLimitStatus(statusCode) {
+    return statusCode === 403 || statusCode === 429;
 }
 async function resolveVersion(version, token) {
-    if (version !== 'latest') {
-        return ensureVPrefix(version);
+    const normalized = version.trim();
+    if (normalized !== '' && normalized !== 'latest') {
+        return assertSupportedExplicitVersion(normalized);
     }
     const http = new lib_HttpClient('betterleaks-action');
-    const headers = {};
+    const headers = {
+        Accept: 'application/vnd.github+json'
+    };
     if (token) {
         headers['Authorization'] = `token ${token}`;
     }
-    const url = `https://api.github.com/repos/${TOOL_REPO_OWNER}/${TOOL_REPO_NAME}/releases/latest`;
-    const response = await http.getJson(url, headers);
-    if (response.statusCode === 403) {
-        throw new Error('GitHub API rate limit exceeded. Provide a github-token input for authenticated requests.');
+    let bestV1;
+    for (let page = 1; page <= MAX_RELEASE_PAGES; page++) {
+        const url = `https://api.github.com/repos/${TOOL_REPO_OWNER}/${TOOL_REPO_NAME}/releases?per_page=${RELEASES_PER_PAGE}&page=${page}`;
+        let response;
+        try {
+            response = await http.getJson(url, headers);
+        }
+        catch (error) {
+            const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
+                ? error.statusCode
+                : undefined;
+            if (isRateLimitStatus(statusCode)) {
+                throw new Error('GitHub API rate limit exceeded. Provide a github-token input for authenticated requests.');
+            }
+            throw error;
+        }
+        if (isRateLimitStatus(response.statusCode)) {
+            throw new Error('GitHub API rate limit exceeded. Provide a github-token input for authenticated requests.');
+        }
+        if (response.statusCode !== 200 || !Array.isArray(response.result)) {
+            throw new Error(`Failed to resolve latest v1.x version: HTTP ${response.statusCode}`);
+        }
+        if (response.result.length === 0) {
+            break;
+        }
+        for (const release of response.result) {
+            if (release.draft || release.prerelease || !release.tag_name) {
+                continue;
+            }
+            const parsed = parseStableV1Tag(release.tag_name);
+            if (!parsed) {
+                continue;
+            }
+            if (!bestV1 || isNewerV1(parsed, bestV1)) {
+                bestV1 = parsed;
+            }
+        }
+        if (!hasNextPage(response.headers?.link, response.result.length)) {
+            break;
+        }
     }
-    if (response.statusCode !== 200 || !response.result) {
-        throw new Error(`Failed to resolve latest version: HTTP ${response.statusCode}`);
+    if (!bestV1) {
+        throw new Error("No stable Betterleaks v1.x release found. Pin a specific v1.x version via the 'version' input.");
     }
-    return response.result.tag_name;
+    return bestV1.tag;
 }
 function getDownloadUrl(version, platform, arch) {
     const key = `${platform}-${arch}`;
