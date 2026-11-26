@@ -1,5 +1,5 @@
 name: 'Betterleaks Action'
-description: 'Scan for secrets and credentials using Betterleaks'
+description: 'Scan for secrets and credentials using Betterleaks v2 with built-in SARIF 2.1.0 conversion'
 author: 'dortort'
 branding:
   icon: 'shield'
@@ -7,33 +7,29 @@ branding:
 
 inputs:
   version:
-    description: 'Betterleaks version (e.g., v1.1.1 or latest)'
+    description: 'Betterleaks v2 version (e.g., v2.0.0, v2.0.0-rc.15, latest, or latest-rc)'
     required: false
     default: 'latest'
   scan-mode:
-    description: 'Scan mode: git, dir, stdin, or auto (auto detects from event type)'
+    description: 'Scan mode: filesystem (or fs), git, stdin, or auto (auto detects from event type)'
     required: false
     default: 'auto'
   scan-path:
-    description: 'Path to scan (positional argument to betterleaks CLI)'
+    description: 'Path to scan (positional argument for filesystem and git modes)'
     required: false
     default: '.'
   config:
-    description: 'Path to Betterleaks config file'
-    required: false
-    default: ''
-  baseline-path:
-    description: 'Path to baseline file for incremental adoption'
+    description: 'Path to Betterleaks v2 config file (not auto-discovered in v2)'
     required: false
     default: ''
   report-format:
-    description: 'Report format (single value): json, csv, junit, sarif, or template'
+    description: 'Report format: sarif, json, or jsonl'
     required: false
     default: 'sarif'
   report-path:
-    description: 'Path to write the report file'
+    description: 'Path to write the report file (defaults to betterleaks-report.<format>)'
     required: false
-    default: 'betterleaks-report.sarif'
+    default: ''
   redact:
     description: 'Redact secrets from output'
     required: false
@@ -42,10 +38,6 @@ inputs:
     description: 'Custom exit code when leaks are found'
     required: false
     default: ''
-  verbose:
-    description: 'Enable verbose output'
-    required: false
-    default: 'false'
   no-color:
     description: 'Disable colored output'
     required: false
@@ -54,10 +46,14 @@ inputs:
     description: 'Suppress ASCII banner'
     required: false
     default: 'true'
-  validation:
-    description: 'Enable live secret validation (CLI defaults to true)'
+  validate:
+    description: 'Enable live credential validation against provider APIs (opt-in)'
     required: false
-    default: 'true'
+    default: 'false'
+  analyze:
+    description: 'Enable credential identity and permission analysis (implies validate)'
+    required: false
+    default: 'false'
   extra-args:
     description: 'Additional CLI arguments passed directly to betterleaks'
     required: false
@@ -81,11 +77,11 @@ outputs:
   report-path:
     description: 'Path to the generated report file'
   sarif-path:
-    description: 'Path to SARIF file (for use with github/codeql-action/upload-sarif)'
+    description: 'Path to SARIF 2.1.0 file when report-format is sarif (for github/codeql-action/upload-sarif)'
   leaks-found:
     description: 'Whether leaks were found (true/false)'
   leak-count:
-    description: 'Number of leaks found (only available when report-format is sarif)'
+    description: 'Number of leaks found (available for sarif, json, and jsonl formats)'
 
 runs:
   using: 'node24'
