@@ -32,7 +32,7 @@ jobs:
           report-path: test-results.sarif
           fail-on-leak: 'false'
 
-      - name: Verify outputs, SARIF 2.1.0 report, and job summary
+      - name: Verify outputs and SARIF 2.1.0 report
         shell: bash
         env:
           EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
@@ -83,12 +83,7 @@ jobs:
             assert.ok(result.partialFingerprints.betterleaksSecretFingerprint)
           }
 
-          const summaryPath = process.env.GITHUB_STEP_SUMMARY
-          assert.ok(summaryPath && fs.existsSync(summaryPath))
-          const summary = fs.readFileSync(summaryPath, 'utf8')
-          assert.ok(summary.includes('Betterleaks Scan Results'))
-          assert.ok(summary.includes('Findings by Rule'))
-          console.log(`Verified ${leakCount} SARIF 2.1.0 finding(s) and job summary`)
+          console.log(`Verified ${leakCount} SARIF 2.1.0 finding(s)`)
           EOF
 
   integration-formats-and-modes:
@@ -186,4 +181,34 @@ jobs:
           assert.equal(cleanSarif.version, '2.1.0')
           assert.deepEqual(cleanSarif.runs[0].results, [])
           console.log('Verified JSON, JSONL, Git SARIF, and clean scan outputs')
+          EOF
+
+      - name: Verify Job Summary rendering end-to-end
+        run: |
+          SUMMARY_FILE="$(mktemp)"
+          OUTPUT_FILE="$(mktemp)"
+          env \
+            INPUT_VERSION="v2.0.0-rc.15" \
+            "INPUT_SCAN-MODE=filesystem" \
+            "INPUT_SCAN-PATH=test-fixtures" \
+            "INPUT_REPORT-FORMAT=sarif" \
+            "INPUT_REPORT-PATH=summary-check.sarif" \
+            INPUT_REDACT=true \
+            "INPUT_NO-COLOR=true" \
+            "INPUT_NO-BANNER=true" \
+            INPUT_VALIDATE=false \
+            INPUT_ANALYZE=false \
+            "INPUT_FAIL-ON-LEAK=false" \
+            INPUT_TIMEOUT=60 \
+            GITHUB_OUTPUT="$OUTPUT_FILE" \
+            GITHUB_STEP_SUMMARY="$SUMMARY_FILE" \
+            node dist/index.js
+          node - "$SUMMARY_FILE" <<'EOF'
+          const assert = require('node:assert/strict')
+          const fs = require('node:fs')
+          const summary = fs.readFileSync(process.argv[2], 'utf8')
+          assert.ok(summary.includes('Betterleaks Scan Results'))
+          assert.ok(summary.includes('Findings by Rule'))
+          assert.ok(summary.includes('Betterleaks 2.0.0-rc.15'))
+          console.log('Verified rendered job summary')
           EOF
