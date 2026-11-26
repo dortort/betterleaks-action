@@ -34754,7 +34754,7 @@ function error(message, properties = {}) {
  * @param properties optional properties to add to the annotation.
  */
 function warning(message, properties = {}) {
-    issueCommand('warning', toCommandProperties(properties), message instanceof Error ? message.toString() : message);
+    command_issueCommand('warning', utils_toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
 /**
  * Adds a notice issue
@@ -35660,14 +35660,13 @@ function _unique(values) {
 const TOOL_NAME = 'betterleaks';
 const TOOL_REPO_OWNER = 'betterleaks';
 const TOOL_REPO_NAME = 'betterleaks';
+const TOOL_INFORMATION_URI = 'https://github.com/betterleaks/betterleaks';
+const SUPPORTED_MAJOR_VERSION = 2;
+const SARIF_SCHEMA = 'https://json.schemastore.org/sarif-2.1.0.json';
+const SARIF_VERSION = '2.1.0';
 const EXIT_CODE_CLEAN = 0;
 const EXIT_CODE_LEAKS_FOUND = 1;
 const EXIT_CODE_UNKNOWN_FLAG = 126;
-/**
- * Maps Node.js `${process.platform}-${process.arch}` to the release asset
- * suffix used by betterleaks. Asset filenames follow the pattern:
- *   betterleaks_{version}_{os}_{arch}.{tar.gz|zip}
- */
 const PLATFORM_MAP = {
     'linux-x64': 'linux_x64',
     'linux-arm64': 'linux_arm64',
@@ -35689,30 +35688,136 @@ function getBinaryName(platform) {
 
 
 
+const SEMVER_PATTERN = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+const MAX_RELEASE_PAGES = 5;
+const RELEASES_PER_PAGE = 100;
 function stripVPrefix(version) {
     return version.startsWith('v') ? version.slice(1) : version;
 }
 function ensureVPrefix(version) {
     return version.startsWith('v') ? version : `v${version}`;
 }
-async function resolveVersion(version, token) {
-    if (version !== 'latest') {
-        return ensureVPrefix(version);
+function parseSemver(version) {
+    const match = SEMVER_PATTERN.exec(version.trim());
+    if (!match) {
+        return null;
     }
+    return {
+        major: Number(match[1]),
+        minor: Number(match[2]),
+        patch: Number(match[3]),
+        prerelease: match[4] ? match[4].split('.') : []
+    };
+}
+function compareSemver(a, b) {
+    if (a.major !== b.major)
+        return a.major - b.major;
+    if (a.minor !== b.minor)
+        return a.minor - b.minor;
+    if (a.patch !== b.patch)
+        return a.patch - b.patch;
+    if (a.prerelease.length === 0 && b.prerelease.length === 0)
+        return 0;
+    if (a.prerelease.length === 0)
+        return 1;
+    if (b.prerelease.length === 0)
+        return -1;
+    const len = Math.max(a.prerelease.length, b.prerelease.length);
+    for (let i = 0; i < len; i++) {
+        const aPart = a.prerelease[i];
+        const bPart = b.prerelease[i];
+        if (aPart === undefined)
+            return -1;
+        if (bPart === undefined)
+            return 1;
+        const aNum = /^\d+$/.test(aPart) ? Number(aPart) : null;
+        const bNum = /^\d+$/.test(bPart) ? Number(bPart) : null;
+        if (aNum !== null && bNum !== null) {
+            if (aNum !== bNum)
+                return aNum - bNum;
+        }
+        else if (aNum !== null) {
+            return -1;
+        }
+        else if (bNum !== null) {
+            return 1;
+        }
+        else if (aPart !== bPart) {
+            return aPart < bPart ? -1 : 1;
+        }
+    }
+    return 0;
+}
+async function fetchReleases(token) {
     const http = new lib_HttpClient('betterleaks-action');
-    const headers = {};
+    const headers = {
+        Accept: 'application/vnd.github+json'
+    };
     if (token) {
         headers['Authorization'] = `token ${token}`;
     }
-    const url = `https://api.github.com/repos/${TOOL_REPO_OWNER}/${TOOL_REPO_NAME}/releases/latest`;
-    const response = await http.getJson(url, headers);
-    if (response.statusCode === 403) {
-        throw new Error('GitHub API rate limit exceeded. Provide a github-token input for authenticated requests.');
+    const allReleases = [];
+    for (let page = 1; page <= MAX_RELEASE_PAGES; page++) {
+        const url = `https://api.github.com/repos/${TOOL_REPO_OWNER}/${TOOL_REPO_NAME}/releases?per_page=${RELEASES_PER_PAGE}&page=${page}`;
+        const response = await http.getJson(url, headers);
+        if (response.statusCode === 403) {
+            throw new Error('GitHub API rate limit exceeded. Provide a github-token input for authenticated requests.');
+        }
+        if (response.statusCode !== 200 || !Array.isArray(response.result)) {
+            throw new Error(`Failed to list Betterleaks releases: HTTP ${response.statusCode}`);
+        }
+        allReleases.push(...response.result);
+        if (response.result.length < RELEASES_PER_PAGE) {
+            break;
+        }
     }
-    if (response.statusCode !== 200 || !response.result) {
-        throw new Error(`Failed to resolve latest version: HTTP ${response.statusCode}`);
+    return allReleases;
+}
+async function resolveVersion(version, token) {
+    const trimmed = version.trim();
+    if (!trimmed) {
+        throw new Error("Betterleaks version cannot be empty. Specify 'latest', 'latest-rc', or a v2.x version (e.g., v2.0.0-rc.15).");
     }
-    return response.result.tag_name;
+    if (trimmed === 'latest' || trimmed === 'latest-rc') {
+        const includePrerelease = trimmed === 'latest-rc';
+        const releases = await fetchReleases(token);
+        let bestTag = null;
+        let bestSemver = null;
+        for (const release of releases) {
+            if (release.draft)
+                continue;
+            if (!includePrerelease && release.prerelease)
+                continue;
+            const parsed = parseSemver(release.tag_name);
+            if (!parsed || parsed.major !== SUPPORTED_MAJOR_VERSION)
+                continue;
+            if (!includePrerelease && parsed.prerelease.length > 0)
+                continue;
+            if (!bestSemver || compareSemver(parsed, bestSemver) > 0) {
+                bestSemver = parsed;
+                bestTag = ensureVPrefix(release.tag_name);
+            }
+        }
+        if (!bestTag) {
+            if (!includePrerelease) {
+                throw new Error("No stable Betterleaks v2 release found yet. Pin an explicit release candidate (e.g., version: 'v2.0.0-rc.15') or use version: 'latest-rc' until v2.0.0 is released.");
+            }
+            throw new Error('No Betterleaks v2 release or release candidate found on GitHub.');
+        }
+        return bestTag;
+    }
+    const parsed = parseSemver(trimmed);
+    if (!parsed) {
+        throw new Error(`Invalid Betterleaks version '${trimmed}'. Expected 'latest', 'latest-rc', or a semantic version like 'v2.0.0' or 'v2.0.0-rc.15'.`);
+    }
+    const tag = ensureVPrefix(trimmed);
+    if (parsed.major === 1) {
+        throw new Error(`Betterleaks ${tag} is a v1 release and is not supported by this Betterleaks v2-native action. Use dortort/betterleaks-action@v0 for Betterleaks v1, or specify a v2.x version (e.g., v2.0.0-rc.15).`);
+    }
+    if (parsed.major !== SUPPORTED_MAJOR_VERSION) {
+        throw new Error(`Unsupported Betterleaks version ${tag}: this action requires Betterleaks v${SUPPORTED_MAJOR_VERSION}.x.`);
+    }
+    return tag;
 }
 function getDownloadUrl(version, platform, arch) {
     const key = `${platform}-${arch}`;
@@ -35730,17 +35835,17 @@ async function install(version, token) {
     const arch = process.arch;
     const resolvedVersion = await resolveVersion(version, token);
     const numericVersion = stripVPrefix(resolvedVersion);
-    // Check tool cache first
     const cachedPath = find(TOOL_NAME, numericVersion, arch);
     if (cachedPath) {
         info(`Found cached betterleaks ${numericVersion}`);
-        return external_path_namespaceObject.join(cachedPath, getBinaryName(platform));
+        return {
+            binaryPath: external_path_namespaceObject.join(cachedPath, getBinaryName(platform)),
+            version: resolvedVersion
+        };
     }
-    // Download
     const downloadUrl = getDownloadUrl(resolvedVersion, platform, arch);
     info(`Downloading betterleaks ${resolvedVersion} from ${downloadUrl}`);
     const downloadPath = await downloadTool(downloadUrl, undefined, token ? `token ${token}` : undefined);
-    // Extract
     let extractedPath;
     if (platform === 'win32') {
         extractedPath = await extractZip(downloadPath);
@@ -35748,21 +35853,24 @@ async function install(version, token) {
     else {
         extractedPath = await extractTar(downloadPath);
     }
-    // Cache
     const cachedDir = await cacheDir(extractedPath, TOOL_NAME, numericVersion, arch);
     const binaryPath = external_path_namespaceObject.join(cachedDir, getBinaryName(platform));
-    // Ensure executable
     if (platform !== 'win32') {
         const { chmod } = await Promise.resolve(/* import() */).then(__nccwpck_require__.t.bind(__nccwpck_require__, 1943, 19));
         await chmod(binaryPath, 0o755);
     }
     info(`Betterleaks ${resolvedVersion} installed to ${binaryPath}`);
-    return binaryPath;
+    return { binaryPath, version: resolvedVersion };
 }
 //# sourceMappingURL=installer.js.map
 ;// CONCATENATED MODULE: ./lib/runner.js
 
 
+const VALID_REPORT_FORMATS = new Set([
+    'sarif',
+    'json',
+    'jsonl'
+]);
 function parseLeakExitCode(exitCodeInput) {
     const trimmed = exitCodeInput.trim();
     if (!trimmed) {
@@ -35774,50 +35882,113 @@ function parseLeakExitCode(exitCodeInput) {
     }
     return parsed;
 }
-function determineScanMode(inputMode, eventName) {
-    if (inputMode !== 'auto') {
-        return inputMode;
+function parseTimeout(timeoutInput) {
+    const trimmed = timeoutInput.trim();
+    if (!trimmed) {
+        return 300;
     }
-    switch (eventName) {
-        case 'push':
-            return 'git';
-        case 'pull_request':
-        case 'pull_request_target':
-        case 'schedule':
-        case 'workflow_dispatch':
-        default:
-            return 'dir';
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`Invalid timeout input: ${timeoutInput}`);
     }
+    return parsed;
 }
-function buildArgs(scanMode, inputs) {
-    const args = [scanMode];
-    // scan-path is a positional argument
-    if (inputs.scanPath && inputs.scanPath !== '.') {
-        args.push(inputs.scanPath);
+function parseReportFormat(formatInput) {
+    const normalized = formatInput.trim().toLowerCase() || 'sarif';
+    if (!VALID_REPORT_FORMATS.has(normalized)) {
+        throw new Error(`Unsupported report-format '${formatInput}'. Betterleaks v2 supports 'json' and 'jsonl', and this action also provides built-in 'sarif' (SARIF 2.1.0) conversion.`);
     }
-    else if (scanMode === 'dir') {
-        args.push('.');
+    return normalized;
+}
+function resolveReportPath(reportPathInput, format) {
+    const trimmed = reportPathInput.trim();
+    if (!trimmed) {
+        return `betterleaks-report.${format}`;
+    }
+    const lower = trimmed.toLowerCase();
+    if (format === 'json' && !lower.endsWith('.json')) {
+        throw new Error(`report-path '${trimmed}' must end in .json when report-format is 'json'`);
+    }
+    if (format === 'jsonl' && !lower.endsWith('.jsonl')) {
+        throw new Error(`report-path '${trimmed}' must end in .jsonl when report-format is 'jsonl'`);
+    }
+    return trimmed;
+}
+function determineScanMode(inputMode, eventName) {
+    const normalized = inputMode.trim().toLowerCase() || 'auto';
+    if (normalized === 'auto') {
+        return eventName === 'push' ? 'git' : 'filesystem';
+    }
+    if (normalized === 'filesystem' || normalized === 'fs' || normalized === 'dir') {
+        return 'filesystem';
+    }
+    if (normalized === 'git' || normalized === 'stdin') {
+        return normalized;
+    }
+    throw new Error(`Invalid scan-mode '${inputMode}'. Expected 'auto', 'filesystem' (or 'fs'), 'git', or 'stdin'.`);
+}
+function splitExtraArgs(extraArgs) {
+    const tokens = [];
+    let current = '';
+    let quote = null;
+    let hasToken = false;
+    for (let i = 0; i < extraArgs.length; i++) {
+        const ch = extraArgs[i];
+        if (quote) {
+            if (ch === quote) {
+                quote = null;
+            }
+            else if (ch === '\\' && quote === '"' && i + 1 < extraArgs.length) {
+                current += extraArgs[++i];
+            }
+            else {
+                current += ch;
+            }
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            quote = ch;
+            hasToken = true;
+        }
+        else if (/\s/.test(ch)) {
+            if (hasToken) {
+                tokens.push(current);
+                current = '';
+                hasToken = false;
+            }
+        }
+        else {
+            current += ch;
+            hasToken = true;
+        }
+    }
+    if (quote) {
+        throw new Error(`Unterminated quote in extra-args: ${extraArgs}`);
+    }
+    if (hasToken) {
+        tokens.push(current);
+    }
+    return tokens;
+}
+function buildArgs(scanMode, inputs, cliOutputPath) {
+    const args = [scanMode];
+    if (scanMode === 'filesystem') {
+        args.push(inputs.scanPath || '.');
+    }
+    else if (scanMode === 'git' && inputs.scanPath && inputs.scanPath !== '.') {
+        args.push(inputs.scanPath);
     }
     if (inputs.config) {
         args.push('--config', inputs.config);
     }
-    if (inputs.baselinePath) {
-        args.push('--baseline-path', inputs.baselinePath);
-    }
-    if (inputs.reportFormat) {
-        args.push('--report-format', inputs.reportFormat);
-    }
-    if (inputs.reportPath) {
-        args.push('--report-path', inputs.reportPath);
+    if (cliOutputPath) {
+        args.push('--output', cliOutputPath);
     }
     if (inputs.redact) {
         args.push('--redact');
     }
-    if (inputs.exitCode) {
-        args.push('--exit-code', inputs.exitCode);
-    }
-    if (inputs.verbose) {
-        args.push('--verbose');
+    if (inputs.exitCode.trim()) {
+        args.push('--exit-code', inputs.exitCode.trim());
     }
     if (inputs.noColor) {
         args.push('--no-color');
@@ -35825,70 +35996,531 @@ function buildArgs(scanMode, inputs) {
     if (inputs.noBanner) {
         args.push('--no-banner');
     }
-    if (!inputs.validation) {
-        args.push('--validation=false');
+    if (inputs.validate) {
+        args.push('--validate');
     }
-    if (inputs.extraArgs) {
-        args.push(...inputs.extraArgs.split(/\s+/).filter(Boolean));
+    if (inputs.analyze) {
+        args.push('--analyze');
+    }
+    if (inputs.extraArgs.trim()) {
+        args.push(...splitExtraArgs(inputs.extraArgs));
     }
     return args;
 }
-async function run(binaryPath, args, timeout) {
-    let stdout = '';
-    let stderr = '';
-    const exitCode = await exec_exec(binaryPath, args, {
-        ignoreReturnCode: true,
-        listeners: {
-            stdout: (data) => {
-                stdout += data.toString();
-            },
-            stderr: (data) => {
-                stderr += data.toString();
+async function run(binaryPath, args, timeoutSeconds) {
+    return new Promise((resolve, reject) => {
+        const child = (0,external_child_process_namespaceObject.spawn)(binaryPath, args, {
+            stdio: ['inherit', 'pipe', 'pipe']
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        let settled = false;
+        let killTimer;
+        const clearTimers = () => {
+            if (timeoutTimer)
+                clearTimeout(timeoutTimer);
+            if (killTimer)
+                clearTimeout(killTimer);
+        };
+        const timeoutTimer = timeoutSeconds > 0
+            ? setTimeout(() => {
+                timedOut = true;
+                child.kill('SIGTERM');
+                killTimer = setTimeout(() => {
+                    child.kill('SIGKILL');
+                }, 5000);
+                killTimer.unref();
+            }, timeoutSeconds * 1000)
+            : undefined;
+        timeoutTimer?.unref();
+        child.stdout?.on('data', (chunk) => {
+            const text = chunk.toString();
+            stdout += text;
+            process.stdout.write(chunk);
+        });
+        child.stderr?.on('data', (chunk) => {
+            const text = chunk.toString();
+            stderr += text;
+            process.stderr.write(chunk);
+        });
+        child.on('error', (error) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimers();
+            reject(error);
+        });
+        child.on('close', (code) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimers();
+            if (timedOut) {
+                reject(new Error(`Betterleaks scan timed out after ${timeoutSeconds} seconds`));
+                return;
             }
-        }
+            resolve({ exitCode: code ?? 1, stdout, stderr });
+        });
     });
-    return { exitCode, stdout, stderr };
 }
 //# sourceMappingURL=runner.js.map
-;// CONCATENATED MODULE: ./lib/sarif.js
+;// CONCATENATED MODULE: ./lib/report.js
 
-async function parseSarifResults(reportPath) {
+function emptyCounts(findings) {
+    const confidence = {
+        high: 0,
+        medium: 0,
+        low: 0,
+        none: 0,
+        other: 0
+    };
+    const severity = {
+        high: 0,
+        medium: 0,
+        unknown: 0,
+        none: 0
+    };
+    const status = {
+        valid: 0,
+        invalid: 0,
+        revoked: 0,
+        needs_validation: 0,
+        unknown: 0,
+        error: 0,
+        none: 0
+    };
+    for (const finding of findings) {
+        if (finding.confidence === 'high')
+            confidence.high++;
+        else if (finding.confidence === 'medium')
+            confidence.medium++;
+        else if (finding.confidence === 'low')
+            confidence.low++;
+        else if (!finding.confidence)
+            confidence.none++;
+        else
+            confidence.other++;
+        const sev = finding.analysis?.severity;
+        if (sev === 'high')
+            severity.high++;
+        else if (sev === 'medium')
+            severity.medium++;
+        else if (sev === 'unknown')
+            severity.unknown++;
+        else
+            severity.none++;
+        const st = finding.analysis?.status;
+        if (st === 'valid')
+            status.valid++;
+        else if (st === 'invalid')
+            status.invalid++;
+        else if (st === 'revoked')
+            status.revoked++;
+        else if (st === 'needs_validation')
+            status.needs_validation++;
+        else if (st === 'unknown')
+            status.unknown++;
+        else if (st === 'error')
+            status.error++;
+        else
+            status.none++;
+    }
+    return { confidence, severity, status };
+}
+function parseJsonReport(reportPath) {
     if (!external_fs_namespaceObject.existsSync(reportPath)) {
-        return { leakCount: 0 };
+        throw new Error(`Betterleaks JSON report not found at ${reportPath}`);
     }
     const content = external_fs_namespaceObject.readFileSync(reportPath, 'utf-8');
-    let report;
+    let parsed;
     try {
-        report = JSON.parse(content);
+        parsed = JSON.parse(content);
     }
     catch {
-        throw new Error(`Failed to parse SARIF file at ${reportPath}: invalid JSON`);
+        throw new Error(`Failed to parse Betterleaks JSON report at ${reportPath}: invalid JSON`);
     }
-    let leakCount = 0;
-    if (report.runs) {
-        for (const run of report.runs) {
-            leakCount += run.results?.length ?? 0;
+    if (!parsed ||
+        typeof parsed !== 'object' ||
+        !Array.isArray(parsed.findings) ||
+        !parsed.scan ||
+        typeof parsed.scan !== 'object') {
+        throw new Error(`Invalid Betterleaks v2 JSON report at ${reportPath}: expected schema_version, findings, and scan`);
+    }
+    return parsed;
+}
+function parseJsonlReport(reportPath) {
+    if (!external_fs_namespaceObject.existsSync(reportPath)) {
+        throw new Error(`Betterleaks JSONL report not found at ${reportPath}`);
+    }
+    const content = external_fs_namespaceObject.readFileSync(reportPath, 'utf-8');
+    const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const findings = [];
+    let scan;
+    let schemaVersion = '1';
+    for (let i = 0; i < lines.length; i++) {
+        let record;
+        try {
+            record = JSON.parse(lines[i]);
+        }
+        catch {
+            throw new Error(`Failed to parse Betterleaks JSONL report at ${reportPath} (line ${i + 1}): invalid JSON`);
+        }
+        if (!record || typeof record !== 'object') {
+            throw new Error(`Invalid Betterleaks JSONL record at ${reportPath} (line ${i + 1})`);
+        }
+        const obj = record;
+        if (obj.schema_version) {
+            schemaVersion = obj.schema_version;
+        }
+        if (obj.finding && typeof obj.finding === 'object') {
+            findings.push(obj.finding);
+        }
+        else if (obj.scan && typeof obj.scan === 'object') {
+            scan = obj.scan;
+        }
+        else {
+            throw new Error(`Unrecognized Betterleaks JSONL record at ${reportPath} (line ${i + 1}): expected finding or scan`);
         }
     }
-    return { leakCount };
+    if (!scan) {
+        const counts = emptyCounts(findings);
+        const now = new Date().toISOString();
+        scan = {
+            state: 'incomplete',
+            source: { type: 'unknown' },
+            started: now,
+            finished: now,
+            betterleaks_version: '',
+            config_hash: '',
+            bytes_scanned: 0,
+            num_findings: findings.length,
+            confidence_counts: counts.confidence,
+            severity_counts: counts.severity,
+            status_counts: counts.status
+        };
+    }
+    return {
+        schema_version: schemaVersion,
+        findings,
+        scan
+    };
+}
+function parseReport(reportPath, format) {
+    return format === 'jsonl'
+        ? parseJsonlReport(reportPath)
+        : parseJsonReport(reportPath);
+}
+//# sourceMappingURL=report.js.map
+;// CONCATENATED MODULE: ./lib/sarif.js
+
+
+
+
+
+function toPosixSlashes(filePath) {
+    return filePath.replace(/\\/g, '/');
+}
+function isWindowsDrivePath(filePath) {
+    return /^[A-Za-z]:\//.test(filePath);
+}
+function isAbsoluteAnyPlatform(posixPath) {
+    return posixPath.startsWith('/') || isWindowsDrivePath(posixPath);
+}
+function encodeUriPath(posixPath) {
+    return posixPath
+        .split('/')
+        .map((segment) => encodeURIComponent(segment))
+        .join('/');
+}
+function normalizeArtifactUri(rawPath, workspaceRoot, fallbackUri = 'stdin') {
+    const trimmed = rawPath?.trim();
+    if (!trimmed) {
+        return fallbackUri;
+    }
+    const normalizedInput = toPosixSlashes(trimmed);
+    const normalizedWorkspace = toPosixSlashes(workspaceRoot).replace(/\/+$/, '');
+    if (isAbsoluteAnyPlatform(normalizedInput)) {
+        const inputForCompare = isWindowsDrivePath(normalizedInput)
+            ? normalizedInput[0].toLowerCase() + normalizedInput.slice(1)
+            : normalizedInput;
+        const workspaceForCompare = isWindowsDrivePath(normalizedWorkspace)
+            ? normalizedWorkspace[0].toLowerCase() + normalizedWorkspace.slice(1)
+            : normalizedWorkspace;
+        if (normalizedWorkspace &&
+            (inputForCompare === workspaceForCompare ||
+                inputForCompare.startsWith(`${workspaceForCompare}/`))) {
+            const relative = normalizedInput.slice(normalizedWorkspace.length + 1);
+            const cleaned = external_path_namespaceObject.posix.normalize(relative).replace(/^(\.\/)+/, '');
+            return encodeUriPath(cleaned || fallbackUri);
+        }
+        const cleanedAbs = external_path_namespaceObject.posix.normalize(normalizedInput);
+        if (isWindowsDrivePath(cleanedAbs)) {
+            return `file:///${encodeUriPath(cleanedAbs)}`;
+        }
+        return `file://${encodeUriPath(cleanedAbs)}`;
+    }
+    const cleanedRel = external_path_namespaceObject.posix
+        .normalize(normalizedInput)
+        .replace(/^(\.\/)+/, '');
+    if (!cleanedRel || cleanedRel === '.') {
+        return fallbackUri;
+    }
+    return encodeUriPath(cleanedRel);
+}
+function mapFindingLevel(finding) {
+    const status = finding.analysis?.status;
+    const severity = finding.analysis?.severity;
+    if (status === 'invalid' || status === 'revoked') {
+        return 'note';
+    }
+    if (status === 'valid' || severity === 'high') {
+        return 'error';
+    }
+    if (severity === 'medium') {
+        return 'warning';
+    }
+    const confidence = finding.confidence.toLowerCase();
+    if (confidence === 'low' || confidence === 'medium') {
+        return 'warning';
+    }
+    return 'error';
+}
+function buildRegion(location) {
+    if (!location.start_line || location.start_line < 1) {
+        return undefined;
+    }
+    const region = {
+        startLine: location.start_line
+    };
+    if (location.end_line && location.end_line >= location.start_line) {
+        region.endLine = location.end_line;
+    }
+    if (location.start_column && location.start_column >= 1) {
+        region.startColumn = location.start_column;
+    }
+    if (location.end_column && location.end_column >= 1) {
+        // SARIF 2.1.0 §3.30.8 defines endColumn as 1-based exclusive, whereas Betterleaks reports 1-based inclusive columns.
+        const exclusiveEndColumn = location.end_column + 1;
+        const isMultiLine = (region.endLine ?? region.startLine) > region.startLine;
+        if (isMultiLine ||
+            !region.startColumn ||
+            exclusiveEndColumn > region.startColumn) {
+            region.endColumn = exclusiveEndColumn;
+        }
+    }
+    return region;
+}
+function buildResultMessage(finding) {
+    const base = finding.description?.trim() || `Secret detected by rule ${finding.rule_id}`;
+    const details = [];
+    if (finding.analysis?.status) {
+        const severitySuffix = finding.analysis.severity && finding.analysis.severity !== 'unknown'
+            ? `, severity: ${finding.analysis.severity}`
+            : '';
+        details.push(`validation: ${finding.analysis.status}${severitySuffix}`);
+    }
+    else if (finding.analysis?.severity &&
+        finding.analysis.severity !== 'unknown') {
+        details.push(`severity: ${finding.analysis.severity}`);
+    }
+    const commitSha = finding.attributes?.['git.sha'];
+    if (commitSha) {
+        details.push(`commit ${commitSha.slice(0, 7)}`);
+    }
+    if (finding.encodings && finding.encodings.length > 0) {
+        details.push(`decoded: ${finding.encodings.join(', ')}`);
+    }
+    return details.length > 0 ? `${base} (${details.join('; ')})` : base;
+}
+function buildPartialFingerprints(finding, artifactUri) {
+    const startLine = finding.location?.start_line ?? 0;
+    const commitSha = finding.attributes?.['git.sha'] ?? '';
+    const secretFp = finding.match?.fingerprint ?? '';
+    const locationHash = external_crypto_namespaceObject.createHash('sha256')
+        .update(`${finding.rule_id}\0${artifactUri}\0${startLine}\0${commitSha}\0${secretFp}`)
+        .digest('hex');
+    const fingerprints = {
+        betterleaksLocationFingerprint: locationHash
+    };
+    if (secretFp) {
+        fingerprints.betterleaksSecretFingerprint = secretFp;
+    }
+    return fingerprints;
+}
+function buildResultProperties(finding) {
+    const props = {};
+    if (finding.confidence)
+        props.confidence = finding.confidence;
+    if (finding.match?.entropy !== undefined)
+        props.entropy = finding.match.entropy;
+    if (finding.rule_hash)
+        props.ruleHash = finding.rule_hash;
+    if (finding.tags && finding.tags.length > 0)
+        props.tags = finding.tags;
+    if (finding.encodings && finding.encodings.length > 0) {
+        props.encodings = finding.encodings;
+    }
+    if (finding.decode_depth !== undefined)
+        props.decodeDepth = finding.decode_depth;
+    if (finding.analysis) {
+        if (finding.analysis.status)
+            props.validationStatus = finding.analysis.status;
+        if (finding.analysis.severity)
+            props.severity = finding.analysis.severity;
+        if (finding.analysis.status_reason) {
+            props.statusReason = finding.analysis.status_reason;
+        }
+        if (finding.analysis.capabilities &&
+            finding.analysis.capabilities.length > 0) {
+            props.capabilities = finding.analysis.capabilities;
+        }
+        if (finding.analysis.identity)
+            props.identity = finding.analysis.identity;
+    }
+    if (finding.attributes) {
+        if (finding.attributes['git.sha'])
+            props.commit = finding.attributes['git.sha'];
+        if (finding.attributes['git.author_name']) {
+            props.author = finding.attributes['git.author_name'];
+        }
+        if (finding.attributes['git.date'])
+            props.date = finding.attributes['git.date'];
+        if (finding.attributes['resource']) {
+            props.resource = finding.attributes['resource'];
+        }
+        if (finding.attributes['url'])
+            props.url = finding.attributes['url'];
+    }
+    return Object.keys(props).length > 0 ? props : undefined;
+}
+function convertToSarif(report, options = {}) {
+    const workspaceRoot = options.workspaceRoot ?? process.env.GITHUB_WORKSPACE ?? process.cwd();
+    const rules = [];
+    const ruleIndexById = new Map();
+    const results = [];
+    for (const finding of report.findings) {
+        let ruleIndex = ruleIndexById.get(finding.rule_id);
+        if (ruleIndex === undefined) {
+            ruleIndex = rules.length;
+            ruleIndexById.set(finding.rule_id, ruleIndex);
+            const ruleTags = Array.from(new Set(['security', 'secrets', ...(finding.tags ?? [])]));
+            const ruleProps = { tags: ruleTags };
+            if (finding.rule_hash) {
+                ruleProps.ruleHash = finding.rule_hash;
+            }
+            rules.push({
+                id: finding.rule_id,
+                shortDescription: {
+                    text: finding.description?.trim() || finding.rule_id
+                },
+                properties: ruleProps
+            });
+        }
+        const fallbackUri = finding.attributes?.['resource'] || report.scan?.source?.type || 'stdin';
+        const artifactUri = normalizeArtifactUri(finding.location?.path, workspaceRoot, fallbackUri);
+        const region = buildRegion(finding.location ?? {});
+        const physicalLocation = {
+            artifactLocation: { uri: artifactUri }
+        };
+        if (region) {
+            physicalLocation.region = region;
+        }
+        const result = {
+            ruleId: finding.rule_id,
+            ruleIndex,
+            level: mapFindingLevel(finding),
+            message: { text: buildResultMessage(finding) },
+            locations: [{ physicalLocation }],
+            partialFingerprints: buildPartialFingerprints(finding, artifactUri)
+        };
+        const resultProperties = buildResultProperties(finding);
+        if (resultProperties) {
+            result.properties = resultProperties;
+        }
+        results.push(result);
+    }
+    const rawVersion = report.scan?.betterleaks_version || options.fallbackVersion || '';
+    const cleanVersion = rawVersion ? stripVPrefix(rawVersion) : undefined;
+    const driver = {
+        name: 'Betterleaks',
+        informationUri: TOOL_INFORMATION_URI,
+        rules
+    };
+    if (cleanVersion) {
+        driver.version = cleanVersion;
+        if (parseSemver(cleanVersion)) {
+            driver.semanticVersion = cleanVersion;
+        }
+    }
+    const run = {
+        tool: { driver },
+        results
+    };
+    if (report.scan) {
+        const invocation = {
+            executionSuccessful: report.scan.state === 'complete'
+        };
+        if (report.scan.started)
+            invocation.startTimeUtc = report.scan.started;
+        if (report.scan.finished)
+            invocation.endTimeUtc = report.scan.finished;
+        run.invocations = [invocation];
+        run.properties = {
+            scanState: report.scan.state,
+            sourceType: report.scan.source?.type,
+            configHash: report.scan.config_hash,
+            bytesScanned: report.scan.bytes_scanned
+        };
+    }
+    return {
+        $schema: SARIF_SCHEMA,
+        version: SARIF_VERSION,
+        runs: [run]
+    };
+}
+function writeSarifReport(sarif, outputPath) {
+    const dir = external_path_namespaceObject.dirname(outputPath);
+    if (dir && dir !== '.') {
+        external_fs_namespaceObject.mkdirSync(dir, { recursive: true });
+    }
+    external_fs_namespaceObject.writeFileSync(outputPath, `${JSON.stringify(sarif, null, 2)}\n`, 'utf-8');
 }
 //# sourceMappingURL=sarif.js.map
 ;// CONCATENATED MODULE: ./lib/summary.js
 
 
-async function writeSummary(leakCount, scanMode, reportPath, exitCode, leakExitCode = EXIT_CODE_LEAKS_FOUND) {
-    const isError = exitCode !== EXIT_CODE_CLEAN && exitCode !== leakExitCode;
+const MAX_RULE_ROWS = 25;
+function formatBytes(bytes) {
+    if (bytes >= 1000000000)
+        return `${(bytes / 1000000000).toFixed(2)} GB`;
+    if (bytes >= 1000000)
+        return `${(bytes / 1000000).toFixed(2)} MB`;
+    if (bytes >= 1000)
+        return `${(bytes / 1000).toFixed(2)} KB`;
+    return `${bytes} bytes`;
+}
+async function writeSummary(options) {
+    const { report, scanMode, reportPath, reportFormat, exitCode, leakExitCode = EXIT_CODE_LEAKS_FOUND, validate = false, analyze = false } = options;
+    const scanIncomplete = options.scanIncomplete ?? report?.scan.state === 'incomplete';
+    const leakCount = report ? report.findings.length : undefined;
+    const isExitError = exitCode !== EXIT_CODE_CLEAN && exitCode !== leakExitCode;
+    const missingReportError = !report && exitCode !== EXIT_CODE_CLEAN;
+    const isError = isExitError || missingReportError;
     const hasPositiveCount = leakCount !== undefined && leakCount > 0;
     const isLeakExit = leakExitCode !== EXIT_CODE_CLEAN && exitCode === leakExitCode;
     const leaksDetected = !isError && (hasPositiveCount || isLeakExit);
-    const isIndeterminate = !isError &&
-        !leaksDetected &&
-        leakExitCode === EXIT_CODE_CLEAN &&
-        leakCount === undefined;
     let statusEmoji;
     let statusText;
     let leaksFoundCell;
-    if (isError) {
+    if (scanIncomplete) {
+        statusEmoji = '\u274c';
+        statusText = hasPositiveCount
+            ? `Scan incomplete (${leakCount} partial leak(s) found)`
+            : `Scan incomplete (exit code ${exitCode})`;
+        leaksFoundCell = leakCount !== undefined ? String(leakCount) : 'N/A';
+    }
+    else if (isError) {
         statusEmoji = '\u274c';
         statusText = `Scan failed (exit code ${exitCode})`;
         leaksFoundCell = 'N/A';
@@ -35900,23 +36532,12 @@ async function writeSummary(leakCount, scanMode, reportPath, exitCode, leakExitC
             : 'Leaks detected';
         leaksFoundCell = hasPositiveCount ? String(leakCount) : 'unknown';
     }
-    else if (isIndeterminate) {
-        statusEmoji = '\u26a0\ufe0f';
-        statusText = 'Scan completed (leak status unavailable)';
-        leaksFoundCell = 'unknown';
-    }
     else {
         statusEmoji = '\u2705';
         statusText = 'No leaks detected';
         leaksFoundCell = String(leakCount ?? 0);
     }
-    const footer = isError
-        ? '\n\nPowered by [Betterleaks](https://github.com/betterleaks/betterleaks)'
-        : `\n\nReport written to \`${reportPath}\`\n\n` +
-            'Powered by [Betterleaks](https://github.com/betterleaks/betterleaks)';
-    await summary
-        .addHeading(`${statusEmoji} Betterleaks Scan Results`)
-        .addTable([
+    summary.addHeading(`${statusEmoji} Betterleaks Scan Results`).addTable([
         [
             { data: 'Status', header: true },
             { data: 'Scan Mode', header: true },
@@ -35924,9 +36545,114 @@ async function writeSummary(leakCount, scanMode, reportPath, exitCode, leakExitC
             { data: 'Exit Code', header: true }
         ],
         [statusText, scanMode, leaksFoundCell, String(exitCode)]
-    ])
-        .addRaw(footer)
-        .write();
+    ]);
+    if (report && report.findings.length > 0) {
+        const byRule = new Map();
+        for (const finding of report.findings) {
+            const existing = byRule.get(finding.rule_id);
+            if (existing) {
+                existing.count++;
+            }
+            else {
+                byRule.set(finding.rule_id, {
+                    description: finding.description || finding.rule_id,
+                    count: 1
+                });
+            }
+        }
+        const sortedRules = Array.from(byRule.entries()).sort((a, b) => {
+            if (b[1].count !== a[1].count)
+                return b[1].count - a[1].count;
+            return a[0].localeCompare(b[0]);
+        });
+        const rows = [
+            [
+                { data: 'Rule ID', header: true },
+                { data: 'Description', header: true },
+                { data: 'Count', header: true }
+            ]
+        ];
+        for (const [ruleId, info] of sortedRules.slice(0, MAX_RULE_ROWS)) {
+            rows.push([ruleId, info.description, String(info.count)]);
+        }
+        if (sortedRules.length > MAX_RULE_ROWS) {
+            const remaining = sortedRules.length - MAX_RULE_ROWS;
+            rows.push([`+${remaining} more rule(s)`, '', '']);
+        }
+        summary.addHeading('Findings by Rule', 3).addTable(rows);
+    }
+    if (report) {
+        const sc = report.scan.status_counts;
+        const sev = report.scan.severity_counts;
+        const hasValidationData = validate ||
+            analyze ||
+            sc.valid > 0 ||
+            sc.invalid > 0 ||
+            sc.revoked > 0 ||
+            sc.needs_validation > 0 ||
+            sc.unknown > 0 ||
+            sc.error > 0;
+        const hasSeverityData = analyze || sev.high > 0 || sev.medium > 0 || sev.unknown > 0;
+        if (hasValidationData || hasSeverityData) {
+            summary.addHeading('Validation & Analysis', 3);
+            if (hasValidationData) {
+                summary.addTable([
+                    [
+                        { data: 'Valid', header: true },
+                        { data: 'Invalid', header: true },
+                        { data: 'Revoked', header: true },
+                        { data: 'Needs Validation', header: true },
+                        { data: 'Unknown', header: true },
+                        { data: 'Error', header: true },
+                        { data: 'Unchecked', header: true }
+                    ],
+                    [
+                        String(sc.valid),
+                        String(sc.invalid),
+                        String(sc.revoked),
+                        String(sc.needs_validation),
+                        String(sc.unknown),
+                        String(sc.error),
+                        String(sc.none)
+                    ]
+                ]);
+            }
+            if (hasSeverityData) {
+                summary.addTable([
+                    [
+                        { data: 'High Severity', header: true },
+                        { data: 'Medium Severity', header: true },
+                        { data: 'Unknown Severity', header: true },
+                        { data: 'Unset', header: true }
+                    ],
+                    [
+                        String(sev.high),
+                        String(sev.medium),
+                        String(sev.unknown),
+                        String(sev.none)
+                    ]
+                ]);
+            }
+        }
+    }
+    const footerParts = [];
+    if (report || (!isError && !scanIncomplete)) {
+        footerParts.push(`Report written to \`${reportPath}\` (${reportFormat})`);
+    }
+    if (report?.scan) {
+        const meta = [];
+        if (report.scan.betterleaks_version) {
+            meta.push(`Betterleaks ${report.scan.betterleaks_version}`);
+        }
+        if (typeof report.scan.bytes_scanned === 'number') {
+            meta.push(`Scanned ${formatBytes(report.scan.bytes_scanned)}`);
+        }
+        if (meta.length > 0) {
+            footerParts.push(meta.join(' \u2022 '));
+        }
+    }
+    footerParts.push('Powered by [Betterleaks](https://github.com/betterleaks/betterleaks)');
+    await summary.addRaw(`\n\n${footerParts.join('\n\n')}`).write();
 }
 //# sourceMappingURL=summary.js.map
 ;// CONCATENATED MODULE: ./lib/main.js
@@ -35936,65 +36662,112 @@ async function writeSummary(leakCount, scanMode, reportPath, exitCode, leakExitC
 
 
 
+
+
+
+
 function getInputs() {
+    const reportFormat = parseReportFormat(getInput('report-format'));
+    const reportPath = resolveReportPath(getInput('report-path'), reportFormat);
     return {
         scanMode: getInput('scan-mode'),
         scanPath: getInput('scan-path'),
         config: getInput('config'),
-        baselinePath: getInput('baseline-path'),
-        reportFormat: getInput('report-format'),
-        reportPath: getInput('report-path'),
+        reportFormat,
+        reportPath,
         redact: getBooleanInput('redact'),
         exitCode: getInput('exit-code'),
-        verbose: getBooleanInput('verbose'),
         noColor: getBooleanInput('no-color'),
         noBanner: getBooleanInput('no-banner'),
-        validation: getBooleanInput('validation'),
+        validate: getBooleanInput('validate'),
+        analyze: getBooleanInput('analyze'),
         extraArgs: getInput('extra-args'),
-        timeout: parseInt(getInput('timeout'), 10) || 300
+        timeout: parseTimeout(getInput('timeout'))
     };
 }
 async function main() {
+    let tempDir;
     try {
         const inputs = getInputs();
         const leakExitCode = parseLeakExitCode(inputs.exitCode);
-        const version = getInput('version');
+        const version = getInput('version') || 'latest';
         const token = getInput('github-token');
         const failOnLeak = getBooleanInput('fail-on-leak');
-        // Install betterleaks
-        const binaryPath = await install(version, token);
-        // Determine scan mode
+        if (inputs.scanMode.trim().toLowerCase() === 'dir') {
+            warning("scan-mode 'dir' is a legacy alias for 'filesystem'. Update your workflow to use 'filesystem'.");
+        }
+        const { binaryPath, version: installedVersion } = await install(version, token);
         const eventName = process.env.GITHUB_EVENT_NAME || '';
         const scanMode = determineScanMode(inputs.scanMode, eventName);
-        info(`Scan mode: ${scanMode} (event: ${eventName})`);
-        const args = buildArgs(scanMode, inputs);
+        info(`Scan mode: ${scanMode} (event: ${eventName || 'local'})`);
+        let cliOutputPath;
+        if (inputs.reportFormat === 'sarif') {
+            tempDir = external_fs_namespaceObject.mkdtempSync(external_path_namespaceObject.join(external_os_namespaceObject.tmpdir(), 'betterleaks-action-'));
+            cliOutputPath = external_path_namespaceObject.join(tempDir, 'report.json');
+        }
+        else {
+            const reportDir = external_path_namespaceObject.dirname(inputs.reportPath);
+            if (reportDir && reportDir !== '.') {
+                external_fs_namespaceObject.mkdirSync(reportDir, { recursive: true });
+            }
+            cliOutputPath = inputs.reportPath;
+        }
+        const args = buildArgs(scanMode, inputs, cliOutputPath);
         const result = await run(binaryPath, args, inputs.timeout);
-        const isUnexpectedError = result.exitCode !== EXIT_CODE_CLEAN && result.exitCode !== leakExitCode;
+        let report;
+        if (external_fs_namespaceObject.existsSync(cliOutputPath) && external_fs_namespaceObject.statSync(cliOutputPath).size > 0) {
+            report = parseReport(cliOutputPath, inputs.reportFormat === 'jsonl' ? 'jsonl' : 'json');
+        }
+        const scanIncomplete = report?.scan.state === 'incomplete';
+        const isUnexpectedExit = result.exitCode !== EXIT_CODE_CLEAN && result.exitCode !== leakExitCode;
+        const missingReportOnFailure = !report && result.exitCode !== EXIT_CODE_CLEAN;
+        const isScanFailure = isUnexpectedExit || scanIncomplete || missingReportOnFailure;
         setOutput('exit-code', result.exitCode);
         setOutput('report-path', inputs.reportPath);
-        let leakCount;
-        if (inputs.reportFormat === 'sarif') {
+        if (inputs.reportFormat === 'sarif' && report) {
+            const sarif = convertToSarif(report, {
+                fallbackVersion: installedVersion
+            });
+            writeSarifReport(sarif, inputs.reportPath);
             setOutput('sarif-path', inputs.reportPath);
-            if (!isUnexpectedError) {
-                const sarifResults = await parseSarifResults(inputs.reportPath);
-                leakCount = sarifResults.leakCount;
-                setOutput('leak-count', leakCount);
-            }
         }
-        const leaksFound = !isUnexpectedError &&
-            ((leakCount !== undefined && leakCount > 0) ||
-                (leakExitCode !== EXIT_CODE_CLEAN && result.exitCode === leakExitCode));
+        const leakCount = report ? report.findings.length : undefined;
+        if (leakCount !== undefined) {
+            setOutput('leak-count', leakCount);
+        }
+        const leaksFound = (leakCount !== undefined && leakCount > 0) ||
+            (!isScanFailure &&
+                leakExitCode !== EXIT_CODE_CLEAN &&
+                result.exitCode === leakExitCode);
         setOutput('leaks-found', leaksFound);
-        await writeSummary(leakCount, scanMode, inputs.reportPath, result.exitCode, leakExitCode);
-        if (isUnexpectedError) {
+        await writeSummary({
+            report,
+            scanMode,
+            reportPath: inputs.reportPath,
+            reportFormat: inputs.reportFormat,
+            exitCode: result.exitCode,
+            leakExitCode,
+            validate: inputs.validate,
+            analyze: inputs.analyze,
+            scanIncomplete
+        });
+        if (scanIncomplete) {
+            setFailed(`Betterleaks scan ended incomplete (exit code ${result.exitCode})${leakCount ? ` with ${leakCount} partial finding(s)` : ''}: ${result.stderr}`);
+        }
+        else if (isUnexpectedExit || missingReportOnFailure) {
             setFailed(`Betterleaks exited with unexpected code ${result.exitCode}: ${result.stderr}`);
         }
         else if (leaksFound && failOnLeak) {
-            setFailed(`Betterleaks detected ${leakCount || 'one or more'} secret(s). See report at ${inputs.reportPath}`);
+            setFailed(`Betterleaks detected ${leakCount ?? 'one or more'} secret(s). See report at ${inputs.reportPath}`);
         }
     }
     catch (error) {
         setFailed(error instanceof Error ? error.message : 'Unknown error occurred');
+    }
+    finally {
+        if (tempDir) {
+            external_fs_namespaceObject.rmSync(tempDir, { recursive: true, force: true });
+        }
     }
 }
 main();
