@@ -11,91 +11,179 @@ permissions:
   security-events: write
 
 jobs:
-  integration-dir-scan:
-    name: Integration - Dir Scan
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Run Betterleaks Action (dir scan)
-        id: scan
-        uses: ./
-        with:
-          scan-mode: dir
-          scan-path: test-fixtures
-          report-format: sarif
-          report-path: test-results.sarif
-          fail-on-leak: 'false'
-
-      - name: Verify outputs
-        run: |
-          echo "Exit code: ${{ steps.scan.outputs.exit-code }}"
-          echo "Leaks found: ${{ steps.scan.outputs.leaks-found }}"
-          echo "Report path: ${{ steps.scan.outputs.report-path }}"
-          echo "SARIF path: ${{ steps.scan.outputs.sarif-path }}"
-
-          if [ ! -f "test-results.sarif" ]; then
-            echo "::warning::SARIF report file not found"
-          fi
-
-  integration-sarif-output:
-    name: Integration - SARIF Output
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Run Betterleaks Action
-        id: scan
-        uses: ./
-        with:
-          scan-mode: dir
-          scan-path: test-fixtures
-          report-format: sarif
-          fail-on-leak: 'false'
-
-      - name: Verify SARIF path output is set
-        run: |
-          if [ -z "${{ steps.scan.outputs.sarif-path }}" ]; then
-            echo "::error::sarif-path output not set"
-            exit 1
-          fi
-          echo "SARIF path output: ${{ steps.scan.outputs.sarif-path }}"
-
   integration-cross-platform:
     name: Integration - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
 
-      - name: Run Betterleaks Action (dir scan)
+      - name: Run Betterleaks v2 Action (filesystem scan with SARIF conversion)
         id: scan
         uses: ./
         with:
-          scan-mode: dir
+          version: 'v2.0.0-rc.15'
+          scan-mode: filesystem
           scan-path: test-fixtures
           report-format: sarif
           report-path: test-results.sarif
           fail-on-leak: 'false'
 
-      - name: Verify the scan ran and wrote its report
+      - name: Verify outputs, SARIF 2.1.0 report, and job summary
         shell: bash
         env:
           EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+          LEAKS_FOUND: ${{ steps.scan.outputs.leaks-found }}
+          LEAK_COUNT: ${{ steps.scan.outputs.leak-count }}
+          REPORT_PATH: ${{ steps.scan.outputs.report-path }}
           SARIF_PATH: ${{ steps.scan.outputs.sarif-path }}
         run: |
-          echo "Exit code: $EXIT_CODE"
-          echo "SARIF path: $SARIF_PATH"
-          if [ -z "$EXIT_CODE" ] || [ -z "$SARIF_PATH" ]; then
-            echo "::error::exit-code or sarif-path output not set"
-            exit 1
-          fi
-          if [ ! -s "test-results.sarif" ]; then
-            echo "::error::SARIF report file missing or empty"
-            exit 1
-          fi
+          node - <<'EOF'
+          const assert = require('node:assert/strict')
+          const fs = require('node:fs')
+
+          assert.equal(process.env.EXIT_CODE, '1')
+          assert.equal(process.env.LEAKS_FOUND, 'true')
+          const leakCount = Number(process.env.LEAK_COUNT)
+          assert.ok(leakCount >= 1, `expected leak-count >= 1, got ${leakCount}`)
+          assert.equal(process.env.REPORT_PATH, 'test-results.sarif')
+          assert.equal(process.env.SARIF_PATH, 'test-results.sarif')
+
+          const sarif = JSON.parse(fs.readFileSync('test-results.sarif', 'utf8'))
+          assert.equal(sarif.$schema, 'https://json.schemastore.org/sarif-2.1.0.json')
+          assert.equal(sarif.version, '2.1.0')
+          assert.equal(sarif.runs.length, 1)
+
+          const [run] = sarif.runs
+          assert.equal(run.tool.driver.name, 'Betterleaks')
+          assert.equal(run.tool.driver.version, '2.0.0-rc.15')
+          assert.equal(run.tool.driver.semanticVersion, '2.0.0-rc.15')
+          assert.ok(run.tool.driver.rules.length >= 1)
+          assert.equal(run.results.length, leakCount)
+          assert.equal(run.invocations[0].executionSuccessful, true)
+
+          for (const result of run.results) {
+            assert.ok(result.ruleId)
+            assert.equal(typeof result.ruleIndex, 'number')
+            assert.ok(['error', 'warning', 'note'].includes(result.level))
+            assert.ok(result.message.text.length > 0)
+            const loc = result.locations[0].physicalLocation
+            const uri = loc.artifactLocation.uri
+            assert.ok(!uri.includes('\\'), `expected posix URI, got ${uri}`)
+            assert.ok(!uri.startsWith('/') && !uri.startsWith('./'), `expected relative URI, got ${uri}`)
+            assert.ok(uri.endsWith('test-fixtures/fake-secrets.txt'), `unexpected URI: ${uri}`)
+            assert.ok(loc.region.startLine >= 1)
+            if (loc.region.endLine === loc.region.startLine && loc.region.startColumn) {
+              assert.ok(loc.region.endColumn > loc.region.startColumn)
+            }
+            assert.ok(result.partialFingerprints.betterleaksLocationFingerprint)
+            assert.ok(result.partialFingerprints.betterleaksSecretFingerprint)
+          }
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY
+          assert.ok(summaryPath && fs.existsSync(summaryPath))
+          const summary = fs.readFileSync(summaryPath, 'utf8')
+          assert.ok(summary.includes('Betterleaks Scan Results'))
+          assert.ok(summary.includes('Findings by Rule'))
+          console.log(`Verified ${leakCount} SARIF 2.1.0 finding(s) and job summary`)
+          EOF
+
+  integration-formats-and-modes:
+    name: Integration - JSON, JSONL, Git, and Clean Scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run JSON report scan
+        id: json-scan
+        uses: ./
+        with:
+          version: 'v2.0.0-rc.15'
+          scan-mode: filesystem
+          scan-path: test-fixtures
+          report-format: json
+          fail-on-leak: 'false'
+
+      - name: Run JSONL report scan
+        id: jsonl-scan
+        uses: ./
+        with:
+          version: 'v2.0.0-rc.15'
+          scan-mode: fs
+          scan-path: test-fixtures
+          report-format: jsonl
+          fail-on-leak: 'false'
+
+      - name: Run Git history scan with SARIF output
+        id: git-scan
+        uses: ./
+        with:
+          version: 'v2.0.0-rc.15'
+          scan-mode: git
+          report-format: sarif
+          report-path: git-results.sarif
+          fail-on-leak: 'false'
+
+      - name: Create clean target directory
+        run: mkdir -p empty-scan-dir
+
+      - name: Run clean scan
+        id: clean-scan
+        uses: ./
+        with:
+          version: 'v2.0.0-rc.15'
+          scan-mode: filesystem
+          scan-path: empty-scan-dir
+          report-format: sarif
+          report-path: clean-results.sarif
+
+      - name: Verify JSON, JSONL, Git SARIF, and clean scan outputs
+        env:
+          JSON_REPORT: ${{ steps.json-scan.outputs.report-path }}
+          JSON_SARIF: ${{ steps.json-scan.outputs.sarif-path }}
+          JSON_COUNT: ${{ steps.json-scan.outputs.leak-count }}
+          JSON_FOUND: ${{ steps.json-scan.outputs.leaks-found }}
+          JSONL_REPORT: ${{ steps.jsonl-scan.outputs.report-path }}
+          JSONL_COUNT: ${{ steps.jsonl-scan.outputs.leak-count }}
+          GIT_COUNT: ${{ steps.git-scan.outputs.leak-count }}
+          CLEAN_EXIT: ${{ steps.clean-scan.outputs.exit-code }}
+          CLEAN_FOUND: ${{ steps.clean-scan.outputs.leaks-found }}
+          CLEAN_COUNT: ${{ steps.clean-scan.outputs.leak-count }}
+        run: |
+          node - <<'EOF'
+          const assert = require('node:assert/strict')
+          const fs = require('node:fs')
+
+          assert.equal(process.env.JSON_REPORT, 'betterleaks-report.json')
+          assert.equal(process.env.JSON_SARIF, '')
+          assert.equal(process.env.JSON_FOUND, 'true')
+          assert.ok(Number(process.env.JSON_COUNT) >= 1)
+          const jsonReport = JSON.parse(fs.readFileSync('betterleaks-report.json', 'utf8'))
+          assert.equal(jsonReport.schema_version, '1')
+          assert.equal(jsonReport.scan.state, 'complete')
+          assert.equal(jsonReport.findings.length, Number(process.env.JSON_COUNT))
+
+          assert.equal(process.env.JSONL_REPORT, 'betterleaks-report.jsonl')
+          assert.ok(Number(process.env.JSONL_COUNT) >= 1)
+          const jsonlLines = fs.readFileSync('betterleaks-report.jsonl', 'utf8').trim().split('\n').map(JSON.parse)
+          assert.ok(jsonlLines.some((r) => r.finding))
+          assert.ok(jsonlLines.some((r) => r.scan && r.scan.state === 'complete'))
+
+          assert.ok(Number(process.env.GIT_COUNT) >= 1)
+          const gitSarif = JSON.parse(fs.readFileSync('git-results.sarif', 'utf8'))
+          assert.equal(gitSarif.version, '2.1.0')
+          assert.ok(gitSarif.runs[0].results.some((r) => r.properties && r.properties.commit))
+
+          assert.equal(process.env.CLEAN_EXIT, '0')
+          assert.equal(process.env.CLEAN_FOUND, 'false')
+          assert.equal(process.env.CLEAN_COUNT, '0')
+          const cleanSarif = JSON.parse(fs.readFileSync('clean-results.sarif', 'utf8'))
+          assert.equal(cleanSarif.version, '2.1.0')
+          assert.deepEqual(cleanSarif.runs[0].results, [])
+          console.log('Verified JSON, JSONL, Git SARIF, and clean scan outputs')
+          EOF
